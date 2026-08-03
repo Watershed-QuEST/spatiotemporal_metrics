@@ -1,6 +1,4 @@
 Date,Site,Q,Area.m2,NPOC..mg.C.L.,TDN..mg.N.L.,Project,Q_Flag,Cl_Flag
-7/8/24,USF12,174.9981,35878093,3.06,0.22,nm,Original,Original
-7/8/24,USF20,181.3953488,19141915,2.74,0.2,nm,Original,Original
 7/16/24,USF03,134.4972654,28885655,2.695,0.29,nm,Original,Original
 7/16/24,USF04,0.397602057,1855105,7.29,0.25,nm,Original,Original
 7/16/24,USF05,147.4323507,25453951,5.525,0.57,nm,Original,Original
@@ -24,9 +22,6 @@ Date,Site,Q,Area.m2,NPOC..mg.C.L.,TDN..mg.N.L.,Project,Q_Flag,Cl_Flag
 7/17/24,USF28,0.597096303,56663.36,3.39,0.1,nm,Original,Original
 7/17/24,USF29,2.489929087,71086.77,3.57,0.36,nm,Original,Original
 7/17/24,USF31,1.989298615,252856.1,3.07,0.16,nm,Gap filled,Original
-7/26/24,USF21,21.17880379,2818745,2.765,0.175,nm,Original,Original
-7/30/24,USF12,75.32281,35878093,2.845,0.23,nm,Original,Original
-7/30/24,USF20,78.82296702,19141915,2.35,0.3,nm,Original,Original
 8/14/24,USF03,150.3080497,28885655,3.525,0.27,nm,Original,Original
 8/14/24,USF04,44.80467114,1855105,6.49,0.2,nm,Original,Original
 8/14/24,USF05,145.097916,25453951,3.43,0.27,nm,Original,Original
@@ -49,9 +44,6 @@ Date,Site,Q,Area.m2,NPOC..mg.C.L.,TDN..mg.N.L.,Project,Q_Flag,Cl_Flag
 8/15/24,USF28,0.364992366,56663.36,4.055,0.23,nm,Original,Original
 8/15/24,USF29,1.171645933,71086.77,2.025,0.235,nm,Original,Original
 8/15/24,USF31,1.989298615,252856.1,3.845,0.18,nm,Original,Original
-8/28/24,USF12,184.6258,35878093,4.23,0.255,nm,Original,Original
-8/28/24,USF20,133.8251662,19141915,3.595,0.275,nm,Original,Original
-8/30/24,USF21,60.43059843,2818745,3.685,0.195,nm,Original,Original
 9/11/24,USF03,159.4880305,28885655,2.695,0.32,nm,Original,Original
 9/11/24,USF04,1.490681024,1855105,8.9,0.25,nm,Original,Original
 9/11/24,USF05,169.2553265,25453951,2.605,0.345,nm,Original,Original
@@ -74,9 +66,6 @@ Date,Site,Q,Area.m2,NPOC..mg.C.L.,TDN..mg.N.L.,Project,Q_Flag,Cl_Flag
 9/12/24,USF28,0.552373345,56663.36,1.93,0.34,nm,Original,Original
 9/12/24,USF29,2.489929087,71086.77,3.69,0.13,nm,Gap filled,Original
 9/12/24,USF31,1.989298615,252856.1,2.89,0.23,nm,Gap filled,Original
-9/18/24,USF21,27.67574794,2818745,2.675,0.2,nm,Original,Original
-9/25/24,USF12,97.97629,35878093,2.47,0.27,nm,Original,Original
-9/25/24,USF20,93.1712963,19141915,2.055,0.325,nm,Original,Original
 2/17/25,BRA01,11.368375,3063372,1.075,5.355,br,Original,Original
 2/17/25,BRA02,3.6465,843581.7,0.33,5.215,br,Original,Gap filled
 2/17/25,BRAA1,37.43275,4013941,1.71,2.92,br,Original,Original
