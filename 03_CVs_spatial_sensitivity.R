@@ -109,26 +109,24 @@ for (cc in names(field_setups)) {
 spatial_mc_results <- bind_rows(spatial_mc_results)
 
 # present and save results
-if (nrow(spatial_mc_results) == 0) {
-  cat("\nspatial_mc_results is empty -- see the SKIP message(s) above.\n")
-} else {
-  spatial_mc_summary <- spatial_mc_results %>%
+spatial_mc_summary <- spatial_mc_results %>%
     group_by(Constituent, N) %>%
     summarize(Median_CVs = median(CVs), P05_CVs = quantile(CVs, 0.05), P95_CVs = quantile(CVs, 0.95),
               SD_CVs = sd(CVs), Ref_CVs = first(Ref_CVs), .groups = "drop") %>%
     mutate(Pct_Bias = (Median_CVs - Ref_CVs) / Ref_CVs * 100)
   
-  cat("\n--- Spatial (CVs) sample-size sensitivity ---\n")
-  print(spatial_mc_summary, n = Inf)
+
+print(spatial_mc_summary, n = Inf)
   
-  write_csv(spatial_mc_summary, file.path(data_out_dir, "CVs_MC_summary.csv"))
+write_csv(spatial_mc_summary, file.path(data_out_dir, "CVs_MC_summary.csv"))
   
-  ## Creates one row per constituent
-  bias_annot <- spatial_mc_summary %>%
+## Creates one row per constituent
+bias_annot <- spatial_mc_summary %>%
     filter(N == actual_n_sites) %>%
     mutate(label = sprintf("At N=%d: %+.1f%% bias", N, Pct_Bias))
-  
-  p_cvs <- ggplot(spatial_mc_summary, aes(x = N, y = Median_CVs)) +
+
+## First plot: how CVs changes with sample size, with % bias of actual sample size annotated
+p_cvs <- ggplot(spatial_mc_summary, aes(x = N, y = Median_CVs)) +
     geom_ribbon(aes(ymin = P05_CVs, ymax = P95_CVs), fill = "grey70", alpha = 0.5) +
     geom_line() + geom_point(size = 1.5) +
     geom_hline(aes(yintercept = Ref_CVs), color = "blue", linetype = "dashed") +
@@ -142,13 +140,12 @@ if (nrow(spatial_mc_results) == 0) {
     theme_bw()
   ggsave(file.path(plot_dir, "CVs_MC_plot.png"), p_cvs, width = 8, height = 6, dpi = 150)
   
-  ## Second plot: percent bias and precision (SD across Monte Carlo iterations), both as a function of N. Pct_Bias shows how far off the median estimate tends to be; SD_CVs shows how much that estimate itself changes at a given sample size. Pivoted to long format so both metrics can share one facet grid (metric x constituent) rather than needing a dual y-axis.
-  sensitivity_long <- spatial_mc_summary %>%
+## Second plot: percent bias and precision (SD across Monte Carlo iterations), both as a function of N. Pct_Bias shows how far off the median estimate tends to be; SD_CVs shows how much that estimate itself changes at a given sample size. Pivoted to long format so both metrics can share one facet grid (metric x constituent) rather than needing a dual y-axis.
+sensitivity_long <- spatial_mc_summary %>%
     select(Constituent, N, Pct_Bias, SD_CVs) %>%
     pivot_longer(c(Pct_Bias, SD_CVs), names_to = "Metric", values_to = "Value") %>%
     mutate(Metric = recode(Metric, Pct_Bias = "Percent bias vs Ref_CVs (%)",
                            SD_CVs = "SD of CVs across MC iterations"))
-  
   p_sensitivity <- ggplot(sensitivity_long, aes(x = N, y = Value)) +
     geom_line() + geom_point(size = 1) +
     geom_hline(yintercept = 0, linetype = "dotted") +
@@ -158,6 +155,6 @@ if (nrow(spatial_mc_results) == 0) {
          title = "Spatial sensitivity: bias and precision vs. sample size",
          subtitle = "Red = actual sample size") +
     theme_bw()
-  ggsave(file.path(plot_dir, "CVs_sensitivity_metrics_plot.png"), p_sensitivity, width = 9, height = 6, dpi = 150)
   
-}
+ggsave(file.path(plot_dir, "CVs_sensitivity_metrics_plot.png"), p_sensitivity, width = 9, height = 6, dpi = 150)
+
