@@ -1,0 +1,96 @@
+---
+title: 'Testing the package on each spatiotemporal metric / example of how to use the package'
+author: "S. J. Terian"
+date: "8/24/2026"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries and Data
+```{r}
+#install.packages("devtools")
+library(devtools)
+
+install_github("sjterian/Watershed-metrics") #creator/repo name
+
+library(watershedmetrics)
+ls("package:watershedmetrics") #list functions to make sure that it worked
+
+```
+
+load the Gu data to use as an example for the package
+```{r}
+data = read.csv("data/Gu_StreamWaterChemistry_processed.csv")
+date_col = "Date"
+site_col = "Site"
+
+
+
+```
+
+
+## 1) Variance collapse ##
+```{r}
+
+
+
+
+
+```
+
+
+## 2) Spatial CV ##
+```{r}
+
+spatial_cv(c(1, 2, 3, 4))
+
+
+spatial_CVs <- execute_spatial_CV(data, "NO3_mgN_L", date_col)
+print(spatial_CVs)
+
+
+
+```
+
+
+
+## 3) Temporal CV ##
+```{r}
+
+
+```
+
+
+## 4) Spatial persistence ##
+```{r}
+
+
+```
+
+
+## 5) Temporal Synchrony ##
+```{r}
+
+
+```
+
+
+
+## 6) Subcatchment leverage ##
+
+```{r}
+
+
+```
+
+
+```{r}
+
+
+```
