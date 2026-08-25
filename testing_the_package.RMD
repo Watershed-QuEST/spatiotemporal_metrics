@@ -26,10 +26,9 @@ ls("package:watershedmetrics") #list functions to make sure that it worked
 
 load the Gu data to use as an example for the package
 ```{r}
-data = read.csv("data/Gu_StreamWaterChemistry_processed.csv")
-date_col = "Date"
-site_col = "Site"
-
+dat <- read.csv("data/Gu_StreamWaterChemistry_processed.csv")
+date_col = "n.sampling"
+site_col = "p.sampling"
 
 
 ```
@@ -50,10 +49,13 @@ site_col = "Site"
 
 spatial_cv(c(1, 2, 3, 4))
 
+#test on the Gu data:
 
-spatial_CVs <- execute_spatial_CV(data, "NO3_mgN_L", date_col)
+spatial_CVs <- execute_spatial_CV(dat, "nitrate", date_col)
 print(spatial_CVs)
 
+average_spatial_CV <- mean(spatial_CVs)
+print(paste('Average Spatial CV:', average_spatial_CV)) #note: Gu's average for nitrate was 0.64
 
 
 ```
@@ -63,6 +65,11 @@ print(spatial_CVs)
 ## 3) Temporal CV ##
 ```{r}
 
+temporal_CVs <- execute_temporal_CV(dat, "nitrate", site_col)
+print(temporal_CVs)
+
+average_temporal_CV <- mean(temporal_CVs)
+print(paste('Average Temporal CV:', average_temporal_CV)) #note: Gu's average for nitrate was 0.41
 
 ```
 
@@ -71,11 +78,41 @@ print(spatial_CVs)
 ```{r}
 
 
+nitrate_sp <- calculate_spatial_persistence(
+  data = dat,
+  concentration_col = "nitrate",
+  site_col = "p.sampling",
+  event_col = "n.sampling"
+)
+
+
+spatial_persistence_by_event <- nitrate_sp$by_event
+print(spatial_persistence_by_event)
+
+average_spatial_persistence <- mean(
+  spatial_persistence_by_event$spatial_persistence,
+  na.rm = TRUE
+)
+
+print(paste(
+    "Average nitrate spatial persistence:",
+    round(average_spatial_persistence, 3)
+  ))
+
+
 ```
 
 
 ## 5) Temporal Synchrony ##
 ```{r}
+
+sync_values <- tsync(dat, "nitrate", site_col, date_col)
+
+print('Temporal Synchrony Values:')
+print(sync_values)
+
+average_sync <- mean(sync_values, na.rm = TRUE)
+print(paste('Average Temporal Synchrony:', average_sync)) #note: Gu's average for nitrate was 0.60
 
 
 ```
@@ -84,8 +121,26 @@ print(spatial_CVs)
 
 ## 6) Subcatchment leverage ##
 
+
+**This is the one we can't compare with the Gu data on
+
 ```{r}
 
+leverage <- calculate_subcatchment_leverage(
+    data = dat,
+    concentration_col = "nitrate",
+    site_col = site_col,
+    event_col = date_col,
+    subcatchment_area_col = dat$surface.ha,
+    contributing_area_col = dat$surface.ha, #conceptually wrong but just testing the function
+    outlet_site = "P01",
+    area_type = c("subcatchment", "contributing"),
+    lower_threshold = -5,
+    upper_threshold = 5
+)
+
+
+leverage
 
 ```
 
