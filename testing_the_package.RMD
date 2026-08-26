@@ -22,6 +22,8 @@ install_github("sjterian/Watershed-metrics") #creator/repo name
 library(watershedmetrics)
 ls("package:watershedmetrics") #list functions to make sure that it worked
 
+
+
 ```
 
 load the Gu data to use as an example for the package
@@ -29,6 +31,9 @@ load the Gu data to use as an example for the package
 dat <- read.csv("data/Gu_StreamWaterChemistry_processed.csv")
 date_col = "n.sampling"
 site_col = "p.sampling"
+
+#I think we need to drop sites with a different naming convention than the others: P1sup, P2sup, P3sup, and YV2
+dat <- dat[!(dat[[site_col]] %in% c("P2sup", "P3sup", "P1sup", "YV2")), ]
 
 
 ```
@@ -64,7 +69,7 @@ print(paste('Average Spatial CV:', average_spatial_CV)) #note: Gu's average for 
 
 ## 3) Temporal CV ##
 ```{r}
-
+  
 temporal_CVs <- execute_temporal_CV(dat, "nitrate", site_col)
 print(temporal_CVs)
 
