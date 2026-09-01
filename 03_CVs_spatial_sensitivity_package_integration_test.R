@@ -3,6 +3,7 @@
 # Project: QuEST Spatiotemporal Metrics Commentary
 # Author: Alex Webster, 2026-07-28 (with help building complex helper functions from Claude version 1.24012.9 (03c61d) 2026-07-24T04:59:17.000Z... heavily reviewed and edited by A. Webster)
 # Last update (Person, Date): Alex Webster, 2026-08-03
+# Bre Rivera Waterman, 2026-09-01 pulling in package/helper function and comparing to previous calculations
 
 # Requires: 02_build_synthetic_data.R must be run first (produces data/nm_clean.csv, data/nm_field_setups.rds, and data/nm_synthetic_extended.csv), and spatiotemporal_helpers.R must be in the same folder as this script.
 
@@ -25,9 +26,11 @@
 
 #### Packages ####
 library(tidyverse)
-library(watershedmetrics)
+#library(watershedmetrics)
 
 source("spatiotemporal_helpers.R")
+source("cv_helper.R")
+
 
 #### Configure in/outputs and file structure ####
 
@@ -75,62 +78,47 @@ write_csv(CVs_observed, file.path(data_out_dir, "CVs_observed.csv"))
 #### PART A.2 -- Calculate CVs of real toy dataset using package!! ####
 # CVs is calculated across sites within each campaign.
 
-CVs_result <- watershedmetrics::spatial_cv(
-  data = clean,
+CVs_result <- spatial_cv(data = clean,
   concentration = names(field_setups),
-  event = "CampaignID"
-)
+  event = "CampaignID",
+  digits = 10)
 
 # One row per campaign × constituent
-CVs_by_campaign.2 <- CVs_result$by_event %>%
-  transmute(
-    Constituent = constituent,
-    CampaignID,
-    n_sites = n_used,
-    CVs = spatial_cv
-  )
+CVs_by_campaign.2 <- 
+  CVs_result$by_event %>%
+  transmute(Constituent = constituent,
+            CampaignID,
+            n_sites = n_used,
+            CVs = spatial_cv)
 
 print(CVs_by_campaign.2)
 
-write_csv(
-  CVs_by_campaign.2,
-  file.path(data_out_dir, "CVs_by_campaign.2.csv")
-)
+write_csv(CVs_by_campaign.2, file.path(data_out_dir, "CVs_by_campaign.2.csv"))
 
 # Mean and SD across campaign-level CVs for each constituent
 CVs_observed.2 <- CVs_result$watershed_summary %>%
-  transmute(
-    Constituent = constituent,
-    n_campaigns = n_events_used,
-    Mean_CVs = mean_spatial_cv,
-    SD_CVs = sd_spatial_cv
-  )
+  transmute(Constituent = constituent,
+            n_campaigns = n_events_used,
+            Mean_CVs = mean_spatial_cv,
+            SD_CVs = sd_spatial_cv )
 
 print(CVs_observed.2)
 
-write_csv(
-  CVs_observed.2,
-  file.path(data_out_dir, "CVs_observed.2.csv")
-)
+write_csv(CVs_observed.2, file.path(data_out_dir, "CVs_observed.2.csv"))
+
 
 
 #### PART A.3 -- Compare original and package results ####
 
 campaign_comparison <- CVs_by_campaign %>%
   mutate(CVs_original_rounded = round(CVs, 2)) %>%
-  full_join(
-    CVs_by_campaign.2 %>%
-      rename(
-        n_sites_package = n_sites,
-        CVs_package = CVs
-      ),
-    by = c("Constituent", "CampaignID")
-  ) %>%
+  full_join(CVs_by_campaign.2 %>%
+      rename(n_sites_package = n_sites,
+            CVs_package = CVs ),
+            by = c("Constituent", "CampaignID")) %>%
   rename(n_sites_original = n_sites) %>%
-  mutate(
-    n_sites_difference = n_sites_package - n_sites_original,
-    CVs_difference = CVs_package - CVs_original_rounded
-  ) %>%
+  mutate(n_sites_difference = n_sites_package - n_sites_original,
+          CVs_difference = CVs_package - CVs_original_rounded) %>%
   arrange(Constituent, CampaignID)
 
 print(campaign_comparison, n = Inf)
@@ -138,31 +126,66 @@ print(campaign_comparison, n = Inf)
 
 #watershed summaries
 summary_comparison <- CVs_observed %>%
-  mutate(
-    Mean_CVs_original_rounded = round(Mean_CVs, 2),
-    SD_CVs_original_rounded = round(SD_CVs, 2)
-  ) %>%
-  full_join(
-    CVs_observed.2 %>%
+  mutate(Mean_CVs_original_rounded = round(Mean_CVs, 2),
+        SD_CVs_original_rounded = round(SD_CVs, 2)) %>%
+  full_join(CVs_observed.2 %>%
       rename(
         n_campaigns_package = n_campaigns,
         Mean_CVs_package = Mean_CVs,
-        SD_CVs_package = SD_CVs
-      ),
-    by = "Constituent"
-  ) %>%
+        SD_CVs_package = SD_CVs),
+    by = "Constituent") %>%
   rename(n_campaigns_original = n_campaigns) %>%
-  mutate(
-    n_campaigns_difference =
-      n_campaigns_package - n_campaigns_original,
-    Mean_CVs_difference =
-      Mean_CVs_package - Mean_CVs_original_rounded,
-    SD_CVs_difference =
-      SD_CVs_package - SD_CVs_original_rounded
-  ) %>%
+  mutate(n_campaigns_difference = n_campaigns_package - n_campaigns_original,
+    Mean_CVs_difference = Mean_CVs_package - Mean_CVs_original_rounded,
+    SD_CVs_difference = SD_CVs_package - SD_CVs_original_rounded) %>%
   arrange(Constituent)
 
 print(summary_comparison, n = Inf)
+
+#visual comparison
+CVs_plot_data <- 
+  bind_rows(CVs_by_campaign %>%
+    transmute(Constituent, CampaignID, CVs,
+      Approach = "Original QuEST calculation" ),
+  CVs_by_campaign.2 %>%
+    transmute(Constituent,CampaignID, CVs, Approach = "CV helper")) %>%
+  filter(!is.na(CVs)) %>%
+  mutate(Approach = factor(Approach,
+      levels = c("Original QuEST calculation", "CV helper") ) )
+
+
+p_cv_comparison <- 
+  ggplot(CVs_plot_data, aes(x = Approach, y = CVs, fill = Approach)) +
+  geom_violin(
+    trim = FALSE,
+    alpha = 0.45,
+    color = NA ) +
+  geom_boxplot(
+    width = 0.18,
+    alpha = 0.75,
+    outlier.shape = NA ) +
+  geom_jitter(
+    width = 0.07,
+    height = 0,
+    size = 1.8,
+    alpha = 0.75 ) +
+  facet_wrap(~ Constituent,
+    scales = "free_y",
+    ncol = 2) +
+  scale_fill_manual(
+    values = c(
+      "Original QuEST calculation" = "#4C78A8",
+      "CV helper" = "#F58518" )) +
+  labs(title = "Spatial CV by calculation approach",
+    subtitle = "Each point is one sampling campaign",
+    x = NULL,
+    y = "Spatial coefficient of variation (CVs)",
+    fill = "Approach") +
+  theme_bw() +
+  theme(legend.position = "none",
+    axis.text.x = element_text(angle = 20, hjust = 1))
+
+p_cv_comparison
 
 
 #### PART B -- Monte Carlo spatial sensitivity analysis ####
