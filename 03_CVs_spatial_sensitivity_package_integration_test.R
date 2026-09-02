@@ -81,7 +81,7 @@ write_csv(CVs_observed, file.path(data_out_dir, "CVs_observed.csv"))
 CVs_result <- spatial_cv(data = clean,
   concentration = names(field_setups),
   event = "CampaignID",
-  digits = 10)
+  digits = 2)
 
 # One row per campaign × constituent
 CVs_by_campaign.2 <- 
@@ -160,10 +160,6 @@ p_cv_comparison <-
     trim = FALSE,
     alpha = 0.45,
     color = NA ) +
-  geom_boxplot(
-    width = 0.18,
-    alpha = 0.75,
-    outlier.shape = NA ) +
   geom_jitter(
     width = 0.07,
     height = 0,
