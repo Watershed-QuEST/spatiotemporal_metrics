@@ -24,11 +24,11 @@ library(stats)
 # List all files in the folder
 toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
 # Download the CSV file
-googledrive::drive_download(file = toy_files$id[toy_files$name=="NM_BR Toy dataset.csv"], 
+googledrive::drive_download(file = toy_files$id[toy_files$name=="NM-BR Toy dataset.csv"], 
                             path = "drivedata/toy.csv",
                             overwrite = T)
 # read in csv
-toy = read.csv("drivedata/toy.csv")
+toydata = read.csv("drivedata/toy.csv")
 
 ### Wrangle toy data ####
 ## Group by project
