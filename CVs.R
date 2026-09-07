@@ -2,7 +2,7 @@
 
 # Project: QuEST Spatiotemporal Metrics Commentary
 # Author: Alex Webster, 2026-07-28 (with help building complex helper functions from Claude version 1.24012.9 (03c61d) 2026-07-24T04:59:17.000Z... heavily reviewed and edited by A. Webster)
-# Last update (Person, Date): Alex Webster, 2026-08-03
+# Last update (Person, Date): Alex Webster, 2026-09-07
 
 # Requires: 02_build_synthetic_data.R must be run first (produces data/nm_clean.csv, data/nm_field_setups.rds, and data/nm_synthetic_extended.csv), and spatiotemporal_helpers.R must be in the same folder as this script.
 
@@ -12,9 +12,7 @@
 
 # This script is organized as:
 #   PART A -- CVs_observed: computed directly from the real nm data
-#   PART B -- Monte Carlo sensitivity sweep: 
-
-# To adapt this script to a metric other than CVs: swap out the statistic computed inside the two n_iter loops in Part B, and Part A's real-data calculation to match.
+#   PART B -- Monte Carlo sensitivity analysis
 
 # Outputs:
 #   data/CVs_by_campaign.csv:  real CVs, one row per real campaign x constituent
@@ -25,12 +23,14 @@
 
 #### Packages ####
 library(tidyverse)
-source("spatiotemporal_helpers.R")
 
 #### Configure in/outputs and file structure ####
 
 data_out_dir <- "data"
 plot_dir     <- "plots"
+
+# Constituents to include in this analysis -- must match column names in data
+constituents <- c("NPOC..mg.C.L.", "TDN..mg.N.L.")
 
 n_iter    <- 10000                                  # Monte Carlo iterations
 site_grid <- c(3:50, 75, 100, 150, 300)              # site counts to test
@@ -46,86 +46,103 @@ synthetic_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.cs
 #### PART A -- Calculate CVs of real toy dataset ####
 # Each site's concentration averaged across its available real campaigns, then CV taken across sites.
 
-CVs_by_campaign <- map_dfr(names(field_setups), function(cc) {
-  clean %>%
+## For each constituent in `constituents`: CVs computed separately for each real campaign (spatial CV across whichever sites were sampled that campaign). Campaigns with fewer than 2 non-NA sites get CVs = NA (sd() of a single value is undefined).
+
+CVs_by_campaign_list <- list()
+CVs_observed_list    <- list()
+
+for (cc in constituents) {
+  
+  by_campaign <- clean %>%
     filter(!is.na(.data[[cc]])) %>%
     group_by(CampaignID) %>%
     summarize(n_sites = n(),
               CVs = if (n() >= 2) sd(.data[[cc]]) / mean(.data[[cc]]) else NA_real_,
               .groups = "drop") %>%
     mutate(Constituent = cc, .before = 1)
-})
+  
+  cat(cc, "-- observed CVs per real campaign:\n")
+  print(by_campaign)
+  
+  ## Summarized across campaigns - Mean_CVs is their average
+  valid_cvs <- by_campaign$CVs[!is.na(by_campaign$CVs)]
+  observed  <- tibble(Constituent = cc, n_campaigns = length(valid_cvs),
+                      Mean_CVs = mean(valid_cvs),
+                      SD_CVs = if (length(valid_cvs) >= 2) sd(valid_cvs) else NA_real_)
+  
+  CVs_by_campaign_list[[cc]] <- by_campaign
+  CVs_observed_list[[cc]]    <- observed
+}
 
-print(CVs_by_campaign)
+CVs_by_campaign <- bind_rows(CVs_by_campaign_list)
 write_csv(CVs_by_campaign, file.path(data_out_dir, "CVs_by_campaign.csv"))
 
-## Summarized across campaigns per constituent
-CVs_observed <- CVs_by_campaign %>%
-  filter(!is.na(CVs)) %>%
-  group_by(Constituent) %>%
-  summarize(n_campaigns = n(), Mean_CVs = mean(CVs),
-            SD_CVs = if (n() >= 2) sd(CVs) else NA_real_, .groups = "drop")
-
-print(CVs_observed)
+CVs_observed <- bind_rows(CVs_observed_list)
 write_csv(CVs_observed, file.path(data_out_dir, "CVs_observed.csv"))
+
+
+
 
 #### PART B -- Monte Carlo spatial sensitivity analysis ####
 
-spatial_mc_results <- list()
+spatial_mc_results_list <- list()
 
-for (cc in names(field_setups)) {
-  fs <- field_setups[[cc]]
-  m <- fs$setup$m
+for (cc in constituents) {
+  
+  fs      <- field_setups[[cc]]
+  m       <- fs$setup$m           # number of predpts locations
+  mu_cond <- fs$setup$mu_cond     # SSN2's kriged mean, one value per location
+  L_space <- fs$setup$L_space     # SSN2's spatial Cholesky factor
+  
   this_site_grid <- site_grid[site_grid <= m]
-  if (length(this_site_grid) == 0) {
-    cat("  SKIP", cc, "-- every site_grid value exceeds m =", m, "predpts.\n")
-    next
-  }
   
-  cat("\n---", cc, "[spatial MC,", n_iter, "iterations, up to", max(this_site_grid), "sites] ---\n")
-  
-  ## Calc reference CVs
+  ## Reference CVs
   ref_cvs <- synthetic_extended %>%
     filter(Constituent == cc) %>%
     group_by(CampaignNum) %>%
     summarize(CVs = sd(Conc) / mean(Conc), .groups = "drop") %>%
     pull(CVs) %>% mean()
   
-  ## One fresh, spatially-correlated noise draw per Monte Carlo iteration; drawn all at once (an m x n_iter matrix in one call). t_days is just a placeholder vector of the right length.
-  noise_pool <- draw_field(fs$setup, t_days = seq_len(n_iter), rho = 0)
-  sim_mat <- exp(fs$setup$mu_cond + noise_pool)  # m x n_iter, natural scale
+  ## Step 1-2: one fresh, spatially-correlated snapshot per Monte Carlo iteration, drawn all at once (an m x n_iter matrix in one call) for  speed, which is equivalent to drawing them one at a time: each column is still an independent draw. Independent random numbers, "smeared" by the spatial Cholesky factor so nearby predpts locations end up correlated the way SSN2 fit them.
+  z             <- matrix(rnorm(m * n_iter), nrow = m, ncol = n_iter)
+  spatial_noise <- t(L_space) %*% z
+  sim_mat       <- exp(mu_cond + spatial_noise)  # m x n_iter, natural scale
+  
+  mc_results <- list()
   
   for (n in this_site_grid) {
+    
     cvs_draws <- numeric(n_iter)
+    
     for (i in seq_len(n_iter)) {
-      idx <- sample(m, n)
-      vals <- sim_mat[idx, i]
+      # Step 3: N of the m locations, from this iteration's own snapshot
+      idx          <- sample(m, n)
+      vals         <- sim_mat[idx, i]
       cvs_draws[i] <- sd(vals) / mean(vals)
     }
-    spatial_mc_results[[paste(cc, n)]] <- tibble(Constituent = cc, N = n, CVs = cvs_draws, Ref_CVs = ref_cvs)
+    
+    mc_results[[paste(n)]] <- tibble(Constituent = cc, N = n, CVs = cvs_draws, Ref_CVs = ref_cvs)
   }
+  
+  spatial_mc_results_list[[cc]] <- bind_rows(mc_results)
 }
 
-spatial_mc_results <- bind_rows(spatial_mc_results)
+## Combine all constituents, summarize, and plot
 
-# present and save results
+spatial_mc_results <- bind_rows(spatial_mc_results_list)
+
 spatial_mc_summary <- spatial_mc_results %>%
     group_by(Constituent, N) %>%
     summarize(Median_CVs = median(CVs), P05_CVs = quantile(CVs, 0.05), P95_CVs = quantile(CVs, 0.95),
               SD_CVs = sd(CVs), Ref_CVs = first(Ref_CVs), .groups = "drop") %>%
     mutate(Pct_Bias = (Median_CVs - Ref_CVs) / Ref_CVs * 100)
   
-
-print(spatial_mc_summary, n = Inf)
-  
 write_csv(spatial_mc_summary, file.path(data_out_dir, "CVs_MC_summary.csv"))
   
-## Creates one row per constituent
 bias_annot <- spatial_mc_summary %>%
     filter(N == actual_n_sites) %>%
     mutate(label = sprintf("At N=%d: %+.1f%% bias", N, Pct_Bias))
-
-## First plot: how CVs changes with sample size, with % bias of actual sample size annotated
+  
 p_cvs <- ggplot(spatial_mc_summary, aes(x = N, y = Median_CVs)) +
     geom_ribbon(aes(ymin = P05_CVs, ymax = P95_CVs), fill = "grey70", alpha = 0.5) +
     geom_line() + geom_point(size = 1.5) +
@@ -138,15 +155,16 @@ p_cvs <- ggplot(spatial_mc_summary, aes(x = N, y = Median_CVs)) +
          title = "Spatial sample-size sensitivity",
          subtitle = "Blue = reference CVs; red = actual sample size") +
     theme_bw()
-  ggsave(file.path(plot_dir, "CVs_MC_plot.png"), p_cvs, width = 8, height = 6, dpi = 150)
-  
-## Second plot: percent bias and precision (SD across Monte Carlo iterations), both as a function of N. Pct_Bias shows how far off the median estimate tends to be; SD_CVs shows how much that estimate itself changes at a given sample size. Pivoted to long format so both metrics can share one facet grid (metric x constituent) rather than needing a dual y-axis.
+ggsave(file.path(plot_dir, "CVs_MC_plot.png"), p_cvs, width = 8, height = 6, dpi = 150)
+
+## Second plot: percent bias and precision (SD across Monte Carlo iterations)
 sensitivity_long <- spatial_mc_summary %>%
     select(Constituent, N, Pct_Bias, SD_CVs) %>%
     pivot_longer(c(Pct_Bias, SD_CVs), names_to = "Metric", values_to = "Value") %>%
     mutate(Metric = recode(Metric, Pct_Bias = "Percent bias vs Ref_CVs (%)",
                            SD_CVs = "SD of CVs across MC iterations"))
-  p_sensitivity <- ggplot(sensitivity_long, aes(x = N, y = Value)) +
+  
+p_sensitivity <- ggplot(sensitivity_long, aes(x = N, y = Value)) +
     geom_line() + geom_point(size = 1) +
     geom_hline(yintercept = 0, linetype = "dotted") +
     geom_vline(xintercept = actual_n_sites, color = "red", linetype = "dashed") +
@@ -155,6 +173,4 @@ sensitivity_long <- spatial_mc_summary %>%
          title = "Spatial sensitivity: bias and precision vs. sample size",
          subtitle = "Red = actual sample size") +
     theme_bw()
-  
 ggsave(file.path(plot_dir, "CVs_sensitivity_metrics_plot.png"), p_sensitivity, width = 9, height = 6, dpi = 150)
-
