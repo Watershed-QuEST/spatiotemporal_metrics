@@ -12,13 +12,12 @@
 
 # This script is organized as:
 #   PART A -- CVt_observed: computed directly from the real nm data
-#   PART B -- Monte Carlo sensitivity sweep: 
-
-# To adapt this script to a metric other than CVt: swap out the statistic computed inside the two n_iter loops in Part B, and Part A's real-data calculation to match.
+#   PART B -- Monte Carlo sensitivity analysis
 
 # Outputs:
-#   data/CVt_observed.csv: real CVt per constituent
-#   data/CVt_MC_summary.csv: sensitivity analysis summary (median, P05-P95, bias vs Ref_CVt)
+#   data/CVt_observed.csv:      real CVt per site x constituent
+#   data/CVt_observed_mean.csv: real CVt averaged across sites, per constituent
+#   data/CVt_MC_summary.csv:    sensitivity analysis summary (median, P05-P95, bias vs Ref_CVt)
 #   plots/CVt_MC_plot.png
 
 #### Packages ####
