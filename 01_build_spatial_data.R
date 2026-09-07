@@ -5,17 +5,19 @@
 # Last update (Person, Date): Alex Webster, 2026-09-07
 
 # This script builds the spatial infrastructure needed for synthesizing synthetic stream network data and conducting Monte-Carlo sensitivity analyses for each metric.
-# This script is written for the "nm" watershed in the toy data set, and should be repeated or looped for additional watersheds. The user must know the sites and stream network well enough to verify that every site snapped to the correct stream in Part A and be able to adjust lat/lon if needed. 
+# This script is written for the "nm" and "br' watersheds in the toy data set, and should be repeated or looped for additional watersheds. The user must know the sites and stream network well enough to verify that every site snapped to the correct stream in Part A and be able to adjust lat/lon if needed. 
 # This script is organized as:
 #   PART A -- delineate stream networks, subwatersheds, and snapped site locations from a DEM, for every site in "All sites.xlsx" toy dataset
 #   PART B -- assemble SSNbler/SSN2 .ssn objects with the tail-up covariance weighted by real flow accumulation (sampled directly off the DEM-derived raster in Part A).
 #   PART C -- save ssn objects for use in downstream scripts
+# REPEATED FOR EACH WATERSHED
 
 # Requires: "All sites.xlsx" (sheet "sites": Site, Code, Lat, Lon), "NM_BR Toy dataset.csv", and internet access for get_elev_raster(). 
 # Outputs:
 #   1. streams.gpkg, sites_snapped.gpkg, subwatersheds.gpkg
 #   2. <network>.ssn/  (the assembled SSN2 object)
-#   3. ssn_objects.rds
+#   3. ssn_objects.rds # for nm watershed
+#   4. ssn_objects_br.rds # for br watershed
 
 #### Packages ####
 library(tidyverse)
