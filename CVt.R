@@ -3,6 +3,8 @@
 # Project: QuEST Spatiotemporal Metrics Commentary
 # Author: Alex Webster, 2026-08-23 (with help building complex helper functions from Claude version 1.24012.9 (03c61d) 2026-07-24T04:59:17.000Z... heavily reviewed and edited by A. Webster)
 # Last update (Person, Date): Alex Webster, 2026-09-08
+# Bre Rivera Waterman, 2026-09-09 pulling in package/helper function and comparing to previous calculations
+
 
 # Requires: 02_build_synthetic_data.R must be run first to produce data/nm_clean.csv, data/nm_field_setups.rds, and data/nm_synthetic_extended.csv. If these are available, no need to rerun 02_build_synthetic_data.R
 
@@ -22,6 +24,9 @@
 
 #### Packages ####
 library(tidyverse)
+source("cv_helper.R")
+
+
 #### Configure in/outputs and file structure ####
 
 data_out_dir <- "data"
@@ -47,7 +52,7 @@ synthetic_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.cs
 actual_n_campaigns <- n_distinct(clean$CampaignID)  # real number of nm campaigns conducted
 
 
-#### PART A -- Calculate CVt of real toy dataset ####
+#### PART A.1 -- Calculate CVt of real toy dataset ####
 # Per-site CV across that site's real campaigns
 
 ## For each constituent in `constituents`: per-site CV across that site's real campaigns (sites with fewer than 3 real campaigns are dropped, since sd() of 1-2 points is too noisy to call a temporal CV).
@@ -59,8 +64,8 @@ for (cc in constituents) {
   per_site_cvt <- clean %>%
     filter(!is.na(.data[[cc]])) %>%
     group_by(Site) %>%
-    summarize(n_campaigns = n(), CVt = sd(.data[[cc]]) / mean(.data[[cc]]), .groups = "drop") %>%
-    filter(n_campaigns >= 3)
+    summarize(n_sites = n(), CVt = sd(.data[[cc]]) / mean(.data[[cc]]), .groups = "drop") %>%
+    filter(n_sites >= 3)
 
   print(per_site_cvt)
   
@@ -71,6 +76,7 @@ for (cc in constituents) {
                                          CVt_observed = cvt_mean)
 }
 
+
 ## ---- Combine and save ----
 CVt_observed <- bind_rows(CVt_observed_list)
 write_csv(CVt_observed, file.path(data_out_dir, "CVt_observed.csv"))
@@ -78,6 +84,114 @@ write_csv(CVt_observed, file.path(data_out_dir, "CVt_observed.csv"))
 CVt_observed_mean <- bind_rows(CVt_observed_mean_list)
 write_csv(CVt_observed_mean, file.path(data_out_dir, "CVt_observed_mean.csv"))
 print(CVt_observed_mean)
+
+
+#### PART A.2 -- Calculate CVt of real toy dataset using package!! ####
+# CVt is calculated for one site across campaigns.
+
+CVt_result <- temporal_cv(data = clean,
+                         concentration = names(field_setups),
+                         site = "Site",
+                         digits = 2)
+
+# One row per site × constituent
+CVt_by_site.2 <- 
+  CVt_result$by_site %>%
+  transmute(Constituent = constituent,
+            Site,
+            n_sites = n_used,
+            CVt = temporal_cv)
+
+print(CVt_by_campaign.2)
+
+#write_csv(CVt_by_campaign.2, file.path(data_out_dir, "CVs_by_campaign.2.csv"))
+
+# Mean and SD across campaign-level CVs for each constituent
+CVt_observed.2 <- CVt_result$watershed_summary %>%
+  transmute(Constituent = constituent,
+            n_sites = n_sites_used,
+            Mean_CVt = mean_temporal_cv,
+            SD_CVt = sd_temporal_cv )
+
+print(CVs_observed.2)
+
+#write_csv(CVs_observed.2, file.path(data_out_dir, "CVs_observed.2.csv"))
+
+#### PART A.3 -- Compare original and package results ####
+site_comparison <- CVt_by_site.2 %>%
+  mutate(CVt_original_rounded = round(CVt, 2)) %>%
+  full_join(CVt_by_campaign.2 %>%
+              rename(
+                #n_sites_package = n_sites,
+                     CVt_package = CVt ),
+            by = c("Constituent", "Site")) %>%
+  #rename(n_sites_original = n_sites) %>%
+  mutate(#n_sites_difference = n_sites_package - n_sites_original,
+         CVt_difference = CVt_package - CVt_original_rounded) %>%
+  arrange(Constituent, Site)
+
+print(site_comparison)
+
+
+#watershed summaries
+summary_comparison <- CVt_observed %>%
+  mutate(Mean_CVt_original_rounded = round(cvt_mean, 2)) %>% #,
+         #SD_CVt_original_rounded = round(SD_CVt, 2)) %>%
+  full_join(CVt_observed.2 %>%
+              rename(
+               # n_sites_package = n_sites_original,
+                Mean_CVt_package = Mean_CVt),
+                #SD_CVt_package = SD_CVt),
+            by = "Constituent") %>%
+  mutate(
+         Mean_CVt_difference = Mean_CVt_package - Mean_CVt_original_rounded ) %>% #,
+        # SD_CVt_difference = SD_CVt_package - SD_CVt_original_rounded) %>%
+  arrange(Constituent)
+
+print(summary_comparison, n = Inf)
+
+
+#visual comparison
+CVt_plot_data <- 
+  bind_rows(CVt_observed %>%
+              transmute(Constituent, Site, CVt,
+                        Approach = "Original QuEST calculation" ),
+            CVt_by_campaign.2 %>%
+              transmute(Constituent,Site, CVt, Approach = "CV helper")) %>%
+  filter(!is.na(CVt)) %>%
+  mutate(Approach = factor(Approach,
+                           levels = c("Original QuEST calculation", "CV helper") ) )
+
+
+p_cv_comparison <- 
+  ggplot(CVt_plot_data, aes(x = Approach, y = CVt, fill = Approach)) +
+  geom_violin(
+    trim = FALSE,
+    alpha = 0.45,
+    color = NA ) +
+  geom_jitter(
+    width = 0.07,
+    height = 0,
+    size = 1.8,
+    alpha = 0.75 ) +
+  facet_wrap(~ Constituent,
+             scales = "free_y",
+             ncol = 2) +
+  scale_fill_manual(
+    values = c(
+      "Original QuEST calculation" = "#4C78A8",
+      "CV helper" = "#F58518" )) +
+  labs(title = "Spatial CV by calculation approach",
+       subtitle = "Each point is one sampling campaign",
+       x = NULL,
+       y = "Spatial coefficient of variation (CVs)",
+       fill = "Approach") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 20, hjust = 1))
+
+p_cv_comparison
+
 
 
 #### PART B -- Monte Carlo temporal sensitivity analysis ####
