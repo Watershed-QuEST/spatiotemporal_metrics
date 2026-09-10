@@ -5,7 +5,7 @@
 # Last update (Person, Date): Alex Webster, 2026-09-07
 # Bre Rivera Waterman, 2026-09-01 pulling in package/helper function and comparing to previous calculations
 
-# Requires: 02_build_synthetic_data.R must be run to produce data/[dataset]_clean.csv for each dataset. 
+# Requires: 02_build_synthetic_data.R must be run to produce data/[dataset]_clean.csv for each dataset and 
 
 # This script demonstrates how to calculate CVs, the spatial coefficient of variation (across sites, one value per sampling event) on three datasets: NM, BR, and Gu et al. 2021. 
 # Complementary sensitivity analyses can be found in CVs_sensitivity.R
@@ -26,16 +26,7 @@ plot_dir     <- "plots"
 # Constituents to include in this analysis -- must match column names in data
 constituents <- c("NPOC..mg.C.L.", "TDN..mg.N.L.")
 
-n_iter    <- 10000                                  # Monte Carlo iterations
-site_grid <- c(3:50, 75, 100, 150, 300)              # site counts to test
-
-actual_n_sites <- 23  # real number of nm sites sampled -- update if that changes
-
-set.seed(42)
-
 clean            <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
-field_setups     <- readRDS(file.path(data_out_dir, "nm_field_setups.rds"))
-synthetic_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.csv"), show_col_types = FALSE)
 
 #### PART A.1 -- Calculate CVs of real toy dataset ####
 # Each site's concentration averaged across its available real campaigns, then CV taken across sites.
@@ -79,7 +70,7 @@ write_csv(CVs_observed, file.path(data_out_dir, "CVs_observed.csv"))
 # CVs is calculated across sites within each campaign.
 
 CVs_result <- spatial_cv(data = clean,
-                         concentration = names(field_setups),
+                         concentration = constituents,
                          event = "CampaignID",
                          digits = 2)
 
