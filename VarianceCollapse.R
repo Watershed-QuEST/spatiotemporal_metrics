@@ -2,7 +2,8 @@
 ## Drafted by J.R. Blaszczak
 
 ## Import Packages
-
+lapply(c("plyr","dplyr","ggplot2","cowplot",
+         "lubridate","tidyverse","googledrive"), require, character.only=T)
 
 #### Imports ####
 # List all files in the folder
