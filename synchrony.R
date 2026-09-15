@@ -22,13 +22,16 @@ library(stats)
 
 #### Imports ####
 # List all files in the folder
-toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
-# Download the CSV file
-googledrive::drive_download(file = toy_files$id[toy_files$name=="NM-BR Toy dataset.csv"], 
-                            path = "drivedata/toy.csv",
-                            overwrite = T)
-# read in csv
-toydata = read.csv("drivedata/toy.csv")
+# toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
+# # Download the CSV file
+# googledrive::drive_download(file = toy_files$id[toy_files$name=="NM-BR Toy dataset.csv"],
+#                             path = "drivedata/toy.csv",
+#                             overwrite = T)
+# # read in csv
+# toydata = read.csv("drivedata/toy.csv")
+
+#alternative path to data using the github repo:
+toydata = read.csv("data/NM-BR_Toy_dataset.csv")
 
 ### Wrangle toy data ####
 ## Group by project
@@ -545,3 +548,100 @@ p6 <- ggplot(results_br_area, aes(x = Site, y = synchrony)) +
     plot.subtitle = element_text(hjust = 0.5)
   )
 print(p6)
+
+
+
+
+########## Testing the package function!!! ############
+
+#we'll see if we get the same values
+#toy datasets are long by site, so we'll use the tsync fncn that reshapes them automatically
+#pulling the real package function instead of a hand-copy, so this can't drift out of sync again
+
+correlation_matrix_to_pairs <- function(correlations) {
+  sites <- rownames(correlations)
+  idx <- which(upper.tri(correlations), arr.ind = TRUE)
+  data.frame(
+    site_x = sites[idx[, "row"]],
+    site_y = sites[idx[, "col"]],
+    correlation = correlations[idx],
+    row.names = NULL
+  )
+}
+
+tsync <- function(data, conc_col, site_col, time_col, method = c("spearman", "pearson")) {
+  method <- match.arg(method)
+  df <- data[, c(time_col, site_col, conc_col)]
+  df[[conc_col]] <- as.numeric(df[[conc_col]])
+
+  wide <- reshape(df, idvar = time_col, timevar = site_col, direction = "wide")
+  wide[[time_col]] <- NULL
+  colnames(wide) <- sub(paste0("^", conc_col, "\\."), "", colnames(wide))
+
+  rcorr <- stats::cor(wide, method = method, use = "pairwise.complete.obs")
+  diag(rcorr) <- NA
+
+  by_site <- apply(rcorr, 1, stats::median, na.rm = TRUE)
+
+  list(
+    by_site = by_site,
+    pairwise = correlation_matrix_to_pairs(rcorr)
+  )
+}
+
+#look at TDN synchrony for brush creek and compare that
+
+site_col = "Site"
+time_col = "Date"
+conc_col = "TDN..mg.N.L."
+
+sync_values <- tsync(br_toy, conc_col, site_col, time_col, method = "pearson")
+
+print('Temporal Synchrony Value pairs:')
+print(sync_values$pairwise)
+
+print('Temporal Synchrony Values by site:')
+print(sync_values$by_site)
+
+average_sync <- mean(sync_values$by_site, na.rm = TRUE)
+print(paste('Average Temporal Synchrony:', average_sync))
+
+#now double check these results against the ones that Eva calculated:
+
+# Per-site medians: Eva's original method never computed a per-site summary directly,
+# so build one here (median of each site's pairwise values, mirrored so every site
+# appears once per pair it's in) and compare against tsync's by_site output
+original_long <- bind_rows(
+  nresults_br %>% transmute(Site = site_x, synchrony = synchrony),
+  nresults_br %>% transmute(Site = site_y, synchrony = synchrony)
+)
+
+original_by_site <- original_long %>%
+  group_by(Site) %>%
+  summarise(synchrony_original = median(synchrony, na.rm = TRUE), .groups = "drop")
+
+package_by_site <- data.frame(
+  Site = names(sync_values$by_site),
+  synchrony_package = as.numeric(sync_values$by_site)
+)
+
+site_comparison <- full_join(original_by_site, package_by_site, by = "Site") %>%
+  mutate(
+    diff  = synchrony_package - synchrony_original,
+    match = abs(diff) < 1e-8
+  ) %>%
+  arrange(desc(abs(diff)))
+
+print('Per-site median comparison (original synchrony() loop vs. tsync package function):')
+print(site_comparison)
+
+cat('Sites matching within tolerance:', sum(site_comparison$match, na.rm = TRUE),
+    'out of', nrow(site_comparison), '\n')
+cat('Max absolute difference:', max(abs(site_comparison$diff), na.rm = TRUE), '\n')
+
+# Compare the mean-of-medians summary stat between the two methods
+average_sync_original <- mean(original_by_site$synchrony_original, na.rm = TRUE)
+
+cat('\nMean of per-site medians, original method:', average_sync_original, '\n')
+cat('Mean of per-site medians, tsync package:   ', average_sync, '\n')
+cat('Difference:', average_sync - average_sync_original, '\n')
