@@ -28,18 +28,25 @@ l <- split(df, df$Proj_Month)
 
 test <- l$`br-2025-02`
 
-#############################################################
-## Test with helper script - variance_breakpoints_helper.R ##
-#############################################################
+##############################
+## Test with helper scripts ##
+##############################
 
 ## start with breakpoints data prep
 source("variance_breakpoints_helper.R")
+source("variance_collapse_fx_helper.R")
 
 test_NPOC <- prepare_variance_observations(concentration = test$NPOC..mg.C.L., area = test$Area.km2)
 detect_variance_breakpoints(concentration = test$NPOC..mg.C.L., area = test$Area.km2)
 
+#^ might be helpful to also spit out a plot that shows concentration across area as a gut check of whether
+# a change point would even be expected
+ggplot(test_NPOC, aes(area, scaled_concentration))+geom_point()+theme_bw() # no changepoint detected but kind of seems like there should be?
+
+########################################################################
 ## Run on data frame with detect_variance_breakpoints_by_group
-## grouping by Proj_Month
+########################################################################
+
 colnames(df)
 NPOC_changepoints <- detect_variance_breakpoints_by_group(data = df, concentration = "NPOC..mg.C.L.", area = "Area.km2", watershed = "Project", event = "Campaign")
 TDN_changepoints <- detect_variance_breakpoints_by_group(data = df, concentration = "TDN..mg.N.L.", area = "Area.km2", watershed = "Project", event = "Campaign")
