@@ -558,18 +558,30 @@ print(p6)
 #toy datasets are long by site, so we'll use the tsync fncn that reshapes them automatically
 #pulling the real package function instead of a hand-copy, so this can't drift out of sync again
 
-correlation_matrix_to_pairs <- function(correlations) {
+correlation_matrix_to_pairs <- function(correlations, data_matrix) {
   sites <- rownames(correlations)
   idx <- which(upper.tri(correlations), arr.ind = TRUE)
   data.frame(
-    site_x = sites[idx[, "row"]],
-    site_y = sites[idx[, "col"]],
+    site_x      = sites[idx[, "row"]],
+    site_y      = sites[idx[, "col"]],
     correlation = correlations[idx],
-    row.names = NULL
+    n_shared    = apply(idx, 1, function(ij) sum(stats::complete.cases(data_matrix[, ij]))),
+    row.names   = NULL
   )
 }
 
-tsync <- function(data, conc_col, site_col, time_col, method = c("spearman", "pearson")) {
+n_shared_matrix <- function(data_matrix) {
+  n <- ncol(data_matrix)
+  shared <- matrix(NA_integer_, n, n, dimnames = list(colnames(data_matrix), colnames(data_matrix)))
+  for (i in seq_len(n)) {
+    for (j in seq_len(n)) {
+      shared[i, j] <- sum(stats::complete.cases(data_matrix[, c(i, j)]))
+    }
+  }
+  shared
+}
+
+tsync <- function(data, conc_col, site_col, time_col, method = c("spearman", "pearson"), min_shared = NULL) {
   method <- match.arg(method)
   df <- data[, c(time_col, site_col, conc_col)]
   df[[conc_col]] <- as.numeric(df[[conc_col]])
@@ -577,15 +589,20 @@ tsync <- function(data, conc_col, site_col, time_col, method = c("spearman", "pe
   wide <- reshape(df, idvar = time_col, timevar = site_col, direction = "wide")
   wide[[time_col]] <- NULL
   colnames(wide) <- sub(paste0("^", conc_col, "\\."), "", colnames(wide))
+  wide <- as.matrix(wide)
 
   rcorr <- stats::cor(wide, method = method, use = "pairwise.complete.obs")
   diag(rcorr) <- NA
+
+  if (!is.null(min_shared)) {
+    rcorr[n_shared_matrix(wide) < min_shared] <- NA_real_
+  }
 
   by_site <- apply(rcorr, 1, stats::median, na.rm = TRUE)
 
   list(
     by_site = by_site,
-    pairwise = correlation_matrix_to_pairs(rcorr)
+    pairwise = correlation_matrix_to_pairs(rcorr, wide)
   )
 }
 
@@ -595,7 +612,7 @@ site_col = "Site"
 time_col = "Date"
 conc_col = "TDN..mg.N.L."
 
-sync_values <- tsync(br_toy, conc_col, site_col, time_col, method = "pearson")
+sync_values <- tsync(br_toy, conc_col, site_col, time_col, method = "pearson", min_shared = 0)
 
 print('Temporal Synchrony Value pairs:')
 print(sync_values$pairwise)
@@ -606,42 +623,44 @@ print(sync_values$by_site)
 average_sync <- mean(sync_values$by_site, na.rm = TRUE)
 print(paste('Average Temporal Synchrony:', average_sync))
 
-#now double check these results against the ones that Eva calculated:
 
-# Per-site medians: Eva's original method never computed a per-site summary directly,
-# so build one here (median of each site's pairwise values, mirrored so every site
-# appears once per pair it's in) and compare against tsync's by_site output
-original_long <- bind_rows(
-  nresults_br %>% transmute(Site = site_x, synchrony = synchrony),
-  nresults_br %>% transmute(Site = site_y, synchrony = synchrony)
-)
 
-original_by_site <- original_long %>%
-  group_by(Site) %>%
-  summarise(synchrony_original = median(synchrony, na.rm = TRUE), .groups = "drop")
+########## Recreating an example figure using tsync() ##########
 
-package_by_site <- data.frame(
-  Site = names(sync_values$by_site),
-  synchrony_package = as.numeric(sync_values$by_site)
-)
+# min_shared is now built into tsync() itself, so the "< 3 shared dates -> NA" flagging
+# the original heatmaps use just falls out of the call directly.
+nresults_br_pkg_flagged <- tsync(br_toy, "TDN..mg.N.L.", "Site", "Date", method = "pearson", min_shared = 3)$pairwise %>%
+  rename(synchrony = correlation)
 
-site_comparison <- full_join(original_by_site, package_by_site, by = "Site") %>%
+
+#### BR Heat map of TDN synchrony (tsync) ####
+brarea_tdn_pkg <- bind_rows(
+  nresults_br_pkg_flagged,
+  nresults_br_pkg_flagged %>% rename(site_x = site_y, site_y = site_x),
+  data.frame(site_x = brsites_by_area, site_y = brsites_by_area, synchrony = 1)
+) %>%
   mutate(
-    diff  = synchrony_package - synchrony_original,
-    match = abs(diff) < 1e-8
-  ) %>%
-  arrange(desc(abs(diff)))
+    site_x = factor(site_x, levels = brsites_by_area),
+    site_y = factor(site_y, levels = brsites_by_area)
+  )
 
-print('Per-site median comparison (original synchrony() loop vs. tsync package function):')
-print(site_comparison)
+p4_pkg <- ggplot(brarea_tdn_pkg, aes(x = site_x, y = site_y, fill = synchrony)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = round(synchrony, 2)), size = 3, color = "black") +
+  scale_fill_gradient2(
+    low = "#2166ac", mid = "white", high = "#d6604d",
+    midpoint = 0, limits = c(-1, 1), name = "Synchrony"
+  ) +
+  labs(
+    title = "Brush Creek Pairwise TDN Synchrony (tsync package function)",
+    x = "Site (by increasing area)", y = "Site (by increasing area)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
 
-cat('Sites matching within tolerance:', sum(site_comparison$match, na.rm = TRUE),
-    'out of', nrow(site_comparison), '\n')
-cat('Max absolute difference:', max(abs(site_comparison$diff), na.rm = TRUE), '\n')
+print(p4_pkg)
 
-# Compare the mean-of-medians summary stat between the two methods
-average_sync_original <- mean(original_by_site$synchrony_original, na.rm = TRUE)
-
-cat('\nMean of per-site medians, original method:', average_sync_original, '\n')
-cat('Mean of per-site medians, tsync package:   ', average_sync, '\n')
-cat('Difference:', average_sync - average_sync_original, '\n')
