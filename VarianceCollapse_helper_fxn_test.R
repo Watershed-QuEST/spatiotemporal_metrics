@@ -26,6 +26,27 @@ df$Area.km2 <- df$Area.m2 / 1e6
 df$Proj_Month <- paste(df$Project,df$Campaign,sep = "-")
 l <- split(df, df$Proj_Month)
 
+test <- l$`br-2025-02`
+
+#############################################################
+## Test with helper script - variance_breakpoints_helper.R ##
+#############################################################
+
+## start with breakpoints data prep
+source("variance_breakpoints_helper.R")
+
+test_NPOC <- prepare_variance_observations(concentration = test$NPOC..mg.C.L., area = test$Area.km2)
+detect_variance_breakpoints(concentration = test$NPOC..mg.C.L., area = test$Area.km2)
+
+## Run on data frame with detect_variance_breakpoints_by_group
+## grouping by Proj_Month
+colnames(df)
+NPOC_changepoints <- detect_variance_breakpoints_by_group(data = df, concentration = "NPOC..mg.C.L.", area = "Area.km2", watershed = "Project", event = "Campaign")
+TDN_changepoints <- detect_variance_breakpoints_by_group(data = df, concentration = "TDN..mg.N.L.", area = "Area.km2", watershed = "Project", event = "Campaign")
+
+#^ might be helpful to provide guidance that concentration/area/watershed/event should be provided as column names in quotations
+#^ also might be helpful to include all information, but then provide a summary table of the key information (i.e., existence of changepoint detected and magnitude if so)
+
 
 
 
