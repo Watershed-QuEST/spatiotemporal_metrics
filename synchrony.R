@@ -2,7 +2,7 @@
 # This script is used to calculate synchrony between sites within a watershed with a toy dataset for QuEST's planned commentary manuscript on the use of spatiotemporal metrics for assessing the spatiotemporal variance of stream chemistry across stream networks.
 # Project: QuEST Spatiotemporal Metrics Commentary
 # Author: Eva Tipps, 2026-09-04 (with help building functions from Claude version 1.24012.9 (03c61d) 2026-09-04T09:58:04.000Z... reviewed and edited by E. Tipps)
-# Last update (Person, Date): Eva Tipps, 2026-09-04
+# Last update (Person, Date): Eva Tipps, 2026-09-16
 
 #### Libraries ####
 library(dplyr)
@@ -20,24 +20,20 @@ library(purrr)
 library(broom)
 library(stats)
 
+source("spatiotemporal_helpers.R")
+
 #### Imports ####
-# List all files in the folder
-# toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
-# # Download the CSV file
-# googledrive::drive_download(file = toy_files$id[toy_files$name=="NM-BR Toy dataset.csv"],
-#                             path = "drivedata/toy.csv",
-#                             overwrite = T)
-# # read in csv
-# toydata = read.csv("drivedata/toy.csv")
+data_out_dir <- "data"
+plot_dir     <- "plots"
 
-#alternative path to data using the github repo:
-toydata = read.csv("data/NM-BR_Toy_dataset.csv")
+nm_toy           <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
+nm_field_setups     <- readRDS(file.path(data_out_dir, "nm_field_setups.rds"))
+nm_toy_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.csv"), show_col_types = FALSE)
 
-### Wrangle toy data ####
-## Group by project
-nm_toy <- toydata[which(toydata$Project=='nm'),]
+br_toy           <- read_csv(file.path(data_out_dir, "br_clean.csv"), show_col_types = FALSE)
+br_field_setups     <- readRDS(file.path(data_out_dir, "br_field_setups.rds"))
+br_toy_extended <- read_csv(file.path(data_out_dir, "br_synthetic_extended.csv"), show_col_types = FALSE)
 
-br_toy <- toydata[which(toydata$Project=='br'),]
 
 #### Temporal synchrony function ####
 synchrony <- function(x, y) {
