@@ -61,7 +61,7 @@ NPOC_fit <- cpt.var(t_order$NPOC_z, method = "PELT", penalty = "MBIC",
 
 cpts(NPOC_fit)
 
-# **having issues with cpts function
+# **having issues with cpts function -- PAUSING HERE - see VarianceCollapse_helper_fxn_test.R
 
 
 
