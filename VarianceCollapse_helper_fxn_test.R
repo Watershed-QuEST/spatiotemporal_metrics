@@ -47,18 +47,17 @@ ggplot(test_NPOC, aes(area, scaled_concentration))+geom_point()+theme_bw() # no 
 ## Run on data frame with detect_variance_breakpoints_by_group
 ########################################################################
 
+# First detect variance breakpoints
 colnames(df)
 NPOC_changepoints <- detect_variance_breakpoints_by_group(data = df, concentration = "NPOC..mg.C.L.", area = "Area.km2", watershed = "Project", event = "Campaign")
 TDN_changepoints <- detect_variance_breakpoints_by_group(data = df, concentration = "TDN..mg.N.L.", area = "Area.km2", watershed = "Project", event = "Campaign")
 
-#^ might be helpful to provide guidance that concentration/area/watershed/event should be provided as column names in quotations
-#^ also might be helpful to include all information, but then provide a summary table of the key information (i.e., existence of changepoint detected and magnitude if so)
+# Then summarize the data
+NPOC_collapse <- variance_collapse_by_group(NPOC_changepoints)
+TDN_collapse <- variance_collapse_by_group(TDN_changepoints)
 
+#View by event - this is very cool! Nice work
+NPOC_collapse$by_event
+TDN_collapse$by_event
 
-
-
-
-
-
-
-
+# I still think some visualization output options would be helpful - maybe the changepoint detection settings are too sensitive?
