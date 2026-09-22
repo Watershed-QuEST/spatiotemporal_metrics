@@ -46,38 +46,30 @@ library(cowplot)
 
 source("spatiotemporal_helpers.R")
 
+# ### Read in Data
+# # List all files in the folder
+# toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
+# # Download the CSV file
+# googledrive::drive_download(file = toy_files$id[toy_files$name=="NM_BR Toy dataset.csv"], 
+#                             path = "drivedata/toy.csv",
+#                             overwrite = T)
+# # read in csv
+# toy = read.csv("drivedata/toy.csv")
+
+# 
+# ### Read in Data
+# # List all files in the folder
+# toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
+# # Download the CSV file
+# googledrive::drive_download(file = toy_files$id[toy_files$name=="NM_BR Toy dataset.csv"], 
+#                             path = "drivedata/toy.csv",
+#                             overwrite = T)
+# # read in csv
+# toy = read.csv("drivedata/toy.csv")
 
 
-
-
-
-
-
-
-
-
-
-
-### Read in Data
-# List all files in the folder
-toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
-# Download the CSV file
-googledrive::drive_download(file = toy_files$id[toy_files$name=="NM_BR Toy dataset.csv"], 
-                            path = "drivedata/toy.csv",
-                            overwrite = T)
-# read in csv
-toy = read.csv("drivedata/toy.csv")
-
-
-### Read in Data
-# List all files in the folder
-toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
-# Download the CSV file
-googledrive::drive_download(file = toy_files$id[toy_files$name=="NM_BR Toy dataset.csv"], 
-                            path = "drivedata/toy.csv",
-                            overwrite = T)
-# read in csv
-toy = read.csv("drivedata/toy.csv")
+#alternative path to data using the github repo:
+toy = read.csv("data/NM-BR_Toy_dataset.csv")
 
 #Adjust datetime
 #View(toy)
@@ -493,7 +485,7 @@ for (cc in names(field_setups)) {
   ref_cvs <- synthetic_extended %>%
     filter(Constituent == cc) %>%
     group_by(CampaignNum) %>%
-    summarize(CVs = sd(Conc) / mean(Conc), .groups = "drop") %>%
+    dplyr::summarize(CVs = sd(Conc) / mean(Conc), .groups = "drop") %>%
     pull(CVs) %>% mean()
   
   ## One fresh, spatially-correlated noise draw per Monte Carlo iteration; drawn all at once (an m x n_iter matrix in one call). t_days is just a placeholder vector of the right length.
@@ -516,7 +508,7 @@ spatial_mc_results <- bind_rows(spatial_mc_results)
 # present and save results
 spatial_mc_summary <- spatial_mc_results %>%
   group_by(Constituent, N) %>%
-  summarize(Median_CVs = median(CVs), P05_CVs = quantile(CVs, 0.05), P95_CVs = quantile(CVs, 0.95),
+  dplyr::summarize(Median_CVs = median(CVs), P05_CVs = quantile(CVs, 0.05), P95_CVs = quantile(CVs, 0.95),
             SD_CVs = sd(CVs), Ref_CVs = first(Ref_CVs), .groups = "drop") %>%
   mutate(Pct_Bias = (Median_CVs - Ref_CVs) / Ref_CVs * 100)
 
@@ -609,6 +601,68 @@ SPpairs_SPfwmc_by_campaign <- plot_grid(SPpairs_ext, SPfwmc_ext)
 plot(SPpairs_SPfwmc_by_campaign) #View side by side plots
 
 ggsave(file.path(plot_dir, "SPpairs_SPfwmc_extended.png"), SPpairs_SPfwmc_by_campaign, width = 8, height = 4, dpi = 150)
+
+
+############################ Testing package function to ensure tht it reproduces the same values #########
+
+#Sophie Terian, 9/21/2026
+#With the assistance of ClaudeCode -- Claude Sonnet 5 (claude-sonnet-5) 2026-09-21, reviewed and edited by S. Terian
+
+#compare results of calc_SPpairs to the package functions in spatial-persistence.R (currenlty using this instead of package)
+
+source("spatial-persistence.R")
+
+
+#For one constituent and one watershed only, we will make sure we're getting the same numbers, then pause.
+
+#look at NPOC spatial persistence for the NM (Upper Santa Fe) toy dataset and compare that to calc_SPpairs above
+persistence_result <- calculate_spatial_persistence(
+  clean,
+  concentration_col = "NPOC..mg.C.L.",
+  site_col          = "Site",
+  event_col         = "CampaignID",
+  min_shared_sites  = 2   # loosest threshold the package fxn allows; matches calc_SPpairs' min_samples = 0 above
+)
+
+print('Spatial Persistence value pairs (package function):')
+print(persistence_result$pairwise)
+
+print('Spatial Persistence values by campaign (package function):')
+print(persistence_result$by_event)
+
+average_persistence <- average_spatial_persistence(persistence_result)
+print(paste('Average Spatial Persistence (package function):', average_persistence))
+
+# Compare directly against calc_SPpairs result for the same constituent/watershed,
+# side by side with a match column so it's easy to see at a glance
+comparison_table <- SPpairs_by_campaign %>%
+  filter(Constituent == "NPOC..mg.C.L.") %>%
+  dplyr::select(CampaignID, SPpairs) %>%
+  left_join(persistence_result$by_event %>% dplyr::select(CampaignID = event, spatial_persistence), by = "CampaignID") %>%
+  mutate(match = round(SPpairs, 6) == round(spatial_persistence, 6))
+
+print('Campaign-by-campaign comparison (calc_SPpairs vs. package function):')
+print(comparison_table)
+
+average_SPpairs <- SPpairs_observed %>% filter(Constituent == "NPOC..mg.C.L.") %>% pull(Mean_SPpairs)
+average_comparison_table <- tibble(
+  method = c("calc_SPpairs (mean of medians)", "calculate_spatial_persistence (average_spatial_persistence)"),
+  value  = c(average_SPpairs, average_persistence)
+) %>%
+  mutate(match = round(value, 6) == round(dplyr::lag(value), 6))
+
+print('Average comparison (calc_SPpairs vs. package function):')
+print(average_comparison_table)
+# confirmed matching 2026-09-21.
+
+
+
+
+
+#Plotting: after we make sure we're getting the same numbers, then we'll work on adjusting the package function to be able to easily output the data in a way that easily enables plotting
+
+
+
 
 
 
