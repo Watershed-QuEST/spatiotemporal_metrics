@@ -114,11 +114,18 @@ calculate_event_correlation <- function(
 #' @param min_shared_sites Minimum number of shared sites required to
 #'   calculate a correlation for a pair of events; pairs with fewer shared
 #'   sites (or without variation in either event) get `NA`.
+#' @param Constituent Optional label (e.g. an analyte/constituent name)
+#'   stamped onto every returned table as a `Constituent` column. Lets
+#'   results from separate calls (one per analyte) be combined with
+#'   `dplyr::bind_rows()` for a color-coded or faceted plot, the same way
+#'   the hand-rolled `calc_SPpairs()` tags its own output. Default `NULL`
+#'   leaves the tables unchanged (no column added).
 #'
 #' @return A list with three data frames: `by_event` (one row per event, with
 #'   its median spatial persistence), `pairwise` (one row per event pair),
 #'   and `event_comparisons` (the pairwise table duplicated in both
-#'   directions, used to build `by_event`).
+#'   directions, used to build `by_event`). Each carries a `Constituent`
+#'   column when the `Constituent` argument is supplied.
 #' @export
 #'
 #' @examples
@@ -133,7 +140,8 @@ calculate_spatial_persistence <- function(
     concentration_col,
     site_col,
     event_col,
-    min_shared_sites = 5L
+    min_shared_sites = 5L,
+    Constituent = NULL
 ) {
   column_args <- c(concentration_col, site_col, event_col)
   if (any(lengths(list(concentration_col, site_col, event_col)) != 1L) ||
@@ -207,6 +215,12 @@ calculate_spatial_persistence <- function(
     )
   }))
   rownames(by_event) <- NULL
+
+  if (!is.null(Constituent)) {
+    pairwise$Constituent <- Constituent
+    comparisons$Constituent <- Constituent
+    by_event$Constituent <- Constituent
+  }
 
   list(
     by_event = by_event,

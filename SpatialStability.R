@@ -621,7 +621,8 @@ persistence_result <- calculate_spatial_persistence(
   concentration_col = "NPOC..mg.C.L.",
   site_col          = "Site",
   event_col         = "CampaignID",
-  min_shared_sites  = 2   # loosest threshold the package fxn allows; matches calc_SPpairs' min_samples = 0 above
+  min_shared_sites  = 2,   # loosest threshold the package fxn allows; matches calc_SPpairs' min_samples = 0 above
+  Constituent       = "NPOC..mg.C.L."  # tags by_event/pairwise/event_comparisons for easy bind_rows()+ggplot later
 )
 
 print('Spatial Persistence value pairs (package function):')
@@ -633,33 +634,17 @@ print(persistence_result$by_event)
 average_persistence <- average_spatial_persistence(persistence_result)
 print(paste('Average Spatial Persistence (package function):', average_persistence))
 
-# Compare directly against calc_SPpairs result for the same constituent/watershed,
-# side by side with a match column so it's easy to see at a glance
-comparison_table <- SPpairs_by_campaign %>%
-  filter(Constituent == "NPOC..mg.C.L.") %>%
-  dplyr::select(CampaignID, SPpairs) %>%
-  left_join(persistence_result$by_event %>% dplyr::select(CampaignID = event, spatial_persistence), by = "CampaignID") %>%
-  mutate(match = round(SPpairs, 6) == round(spatial_persistence, 6))
 
-print('Campaign-by-campaign comparison (calc_SPpairs vs. package function):')
-print(comparison_table)
+p_persistence_NPOC <- ggplot(data = persistence_result$by_event,
+                              aes(x = event, y = spatial_persistence, color = Constituent)) +
+  geom_point(size = 2) +
+  ylim(-1, 1) +
+  labs(title = "Spatial Persistence (package function) -- NPOC, NM toy data",
+       x = "CampaignID", y = "SPpairs") +
+  theme(legend.position = "right") +
+  theme_classic(base_size = 10)
 
-average_SPpairs <- SPpairs_observed %>% filter(Constituent == "NPOC..mg.C.L.") %>% pull(Mean_SPpairs)
-average_comparison_table <- tibble(
-  method = c("calc_SPpairs (mean of medians)", "calculate_spatial_persistence (average_spatial_persistence)"),
-  value  = c(average_SPpairs, average_persistence)
-) %>%
-  mutate(match = round(value, 6) == round(dplyr::lag(value), 6))
-
-print('Average comparison (calc_SPpairs vs. package function):')
-print(average_comparison_table)
-# confirmed matching 2026-09-21.
-
-
-
-
-
-#Plotting: after we make sure we're getting the same numbers, then we'll work on adjusting the package function to be able to easily output the data in a way that easily enables plotting
+print(p_persistence_NPOC)
 
 
 
