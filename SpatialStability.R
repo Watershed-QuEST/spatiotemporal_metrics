@@ -613,7 +613,7 @@ ggsave(file.path(plot_dir, "SPpairs_SPfwmc_extended.png"), SPpairs_SPfwmc_by_cam
 source("spatial-persistence.R")
 
 
-#For one constituent and one watershed only, we will make sure we're getting the same numbers, then pause.
+#For one constituent and one watershed only, we will make sure we're getting the same numbers.
 
 #look at NPOC spatial persistence for the NM (Upper Santa Fe) toy dataset and compare that to calc_SPpairs above
 persistence_result <- calculate_spatial_persistence(
