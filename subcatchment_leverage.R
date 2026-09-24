@@ -5,7 +5,7 @@
 # Purpose: to plot leverage data from NM and BR for the collab. paper using the semi-toy data
 #Author: Andrew Ali 
 #rerwitten: 08/13/2026 (from prior metric codes)
-#last modified: 08/13/2026
+#last modified: 08/13/2026 -> BRW 09/24/2026
 
 ##############
 ## Required ackages ##
@@ -18,16 +18,28 @@ library(ggplot2)
 
 ### Read in Data
 # List all files in the folder
-toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
+#toy_files <- drive_ls(drive_get("https://drive.google.com/drive/u/1/folders/1zh0YTDM5w971iFwmw-iSyTDQQ4MyGL8-"))
 # Download the CSV file
-googledrive::drive_download(file = toy_files$id[toy_files$name=="NM-BR Toy dataset.csv"], 
-                            path = "drivedata/toy.csv",
-                            overwrite = T)
+#googledrive::drive_download(file = toy_files$id[toy_files$name=="NM-BR Toy dataset.csv"], 
+                          #  path = "drivedata/toy.csv",
+                          #  overwrite = T)
 # read in csv
-toy = read.csv("drivedata/toy.csv")
+#toy = read.csv("drivedata/toy.csv")
 
 #Adjust datetime
-View(toy)
+#View(toy)
+#toy$Date <- lubridate::mdy(toy$Date)
+
+
+#### Configure in/outputs and file structure ####
+
+data_out_dir <- "data"
+plot_dir     <- "plots"
+
+# Constituents to include in this analysis -- must match column names in data
+constituents <- c("NPOC..mg.C.L.", "TDN..mg.N.L.")
+
+toy            <- read_csv(file.path(data_out_dir, "NM-BR_Toy_dataset.csv"), show_col_types = FALSE)
 toy$Date <- lubridate::mdy(toy$Date)
 
 
