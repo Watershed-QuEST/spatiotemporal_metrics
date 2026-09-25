@@ -32,9 +32,11 @@ plot_dir     <- "plots"
 
 nm_toy           <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
 nm_toy_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.csv"), show_col_types = FALSE)
+nm_field_setups     <- readRDS(file.path(data_out_dir, "nm_field_setups.rds"))
 
 br_toy           <- read_csv(file.path(data_out_dir, "br_clean.csv"), show_col_types = FALSE)
 br_toy_extended <- read_csv(file.path(data_out_dir, "br_synthetic_extended.csv"), show_col_types = FALSE)
+br_field_setups     <- readRDS(file.path(data_out_dir, "br_field_setups.rds"))
 
 # Monte Carlo iterations
 n_iter    <- 200 #test
@@ -44,6 +46,9 @@ constituents <- c("NPOC..mg.C.L.", "TDN..mg.N.L.")
 n_synthetic_months <- 60      # must match 02_build_synthetic_data.R
 time_unit_days     <- 30.44   # must match 02_build_synthetic_data.R
 total_days <- n_synthetic_months * time_unit_days  # span campaign times are drawn from
+
+actual_n_campaigns_nm <- n_distinct(nm_toy$CampaignID)
+actual_n_campaigns_br <- n_distinct(br_toy$CampaignID)
 
 set.seed(42)
 
@@ -672,7 +677,9 @@ p4_pkg <- ggplot(brarea_tdn_pkg, aes(x = site_x, y = site_y, fill = synchrony)) 
 print(p4_pkg)
 
 
+##########################################
 #### Monte Carlo sensitivity analysis ####
+##########################################
 #### Monte Carlo sensitivity analysis: temporal sample size and synchrony ####
 #NEEDS TO BE CHECKED#
 # For each watershed (NM, BR), draw n_iter independent synthetic spatiotemporal fields at each campaign
@@ -691,29 +698,39 @@ print(p4_pkg)
 # 3. correlate the noise across campaigns (red noise) with rho ^ (days apart / time_unit_days)
 # 4. add SSN2's spatial mean + seasonal shift, exponentiate to the natural scale, compute the synchrony metrics
 
-#### Settings ####
-sync_grid <- camp_grid[camp_grid >= 3]   # Pearson r from n = 2 points is always +/-1; the original script also NAs < 3 shared dates
+# For three synchrony metrics -- spatial synchrony of constituents[1] (between-location correlation),
+# spatial synchrony of constituents[2], and cross-variable synchrony between constituents[1] and
+# constituents[2] at a location -- draw n_iter independent synthetic draws at each campaign count in
+# camp_grid, and see how the resulting synchrony estimate's median and spread compare to Ref_Sync (the
+# "full 5-year record" truth from the static extended dataset).
 
-# Name of the time column in the *_synthetic_extended.csv files (one value per synthetic month).
-# Check with names(nm_toy_extended) and edit if needed.
-ext_time_col <- "Month"
+# Each draw does the same four things:
+# 1. pick n random campaign dates across the 5-year synthetic span (shared by both constituents, so the
+#    same simulated campaigns can be used for the cross-variable synchrony too)
+# 2. build spatially-correlated random noise for those n campaigns (using SSN2's fit, L_space below), for
+#    each constituent; the two constituents' noise draws are correlated at rho_cross before the spatial step
+# 3. correlate that noise across the n campaigns (red noise), based on how many days apart each pair of
+#    them is, using the fitted persistence estimate (rho)
+# 4. add SSN2's spatial mean and seasonal cycle, exponentiate back to the natural (non-log) scale
+# The loops below iterate over campaignn and n_iter random draws
 
-# Constituent labels as they appear in Constituent / names(field_setups)
-var_pair <- c("NPOC", "TDN")
+# Correlation between the two constituents' noise draws at the same location and time, before
+# spatial/temporal structure is applied. 0 = no shared noise (the two constituents are linked only through
+# shared seasonality). Set this to match how synthetic_extended's cross-constituent correlation was built,
+# if that's known; otherwise leave at 0 and treat the Cross panel as a lower bound on how fast
+# cross-variable synchrony stabilizes.
+rho_cross <- 0
 
-# Correlation between NPOC and TDN noise at the same location and time, before spatial/temporal structure
-# is applied. 0 = no shared noise (only shared seasonality links the two variables).
-rho_cross <- c(nm = 0, br = 0)
 
-# To keep the pairwise calculation cheap when there are many predpts, use a fixed random subset of
-# locations for the spatial-synchrony metrics (the cross-variable metric always uses all locations).
-max_sites <- 60
+if (length(constituents) != 2) {
+  stop("This synchrony Monte Carlo expects exactly two constituents (spatial synchrony for each, plus ",
+       "cross-variable synchrony between them); constituents has length ", length(constituents), ".")
+}
 
-# The actual number of campaigns in each real dataset (red line on the plots)
-actual_n_campaigns <- c(nm = n_distinct(nm_toy$Date), br = n_distinct(br_toy$Date))
+# n campaigns below which Pearson r is degenerate (|r| = 1 at n = 2); mirrors the < 3 shared dates flagging
+# used elsewhere in this script.
+sync_grid <- camp_grid[camp_grid >= 3]
 
-#### Helpers ####
-# Mean of the off-diagonal (upper triangle) of a correlation matrix
 mean_offdiag <- function(cm) mean(cm[upper.tri(cm)], na.rm = TRUE)
 
 # Row-wise Pearson correlation between two matrices (row i of A vs row i of B)
@@ -723,160 +740,144 @@ row_cor <- function(A, B) {
   rowSums(Ac * Bc) / sqrt(rowSums(Ac^2) * rowSums(Bc^2))
 }
 
-# One synthetic field (m x n, natural scale) for one constituent, from a standard-normal draw z (m x n)
-simulate_field <- function(fs, z, t_sample, doy_sample) {
-  n    <- length(t_sample)
-  m    <- fs$setup$m
-  beta <- fs$beta
-  rho  <- fs$temporal_rho
+#### Reference synchrony: the static extended dataset's spatial and cross-variable correlations ####
+# predID x CampaignNum matrix of Conc, one per constituent
+wide_extended <- lapply(constituents, function(cc) {
+  nm_toy_extended %>%
+    filter(Constituent == cc) %>%
+    select(predID, CampaignNum, Conc) %>%
+    pivot_wider(names_from = CampaignNum, values_from = Conc) %>%
+    arrange(predID)
+})
+names(wide_extended) <- constituents
+
+# Keep only locations shared by both constituents, in the same order
+common_ids    <- Reduce(intersect, lapply(wide_extended, function(w) w$predID))
+wide_extended <- lapply(wide_extended, function(w) {
+  as.matrix(w[match(common_ids, w$predID), setdiff(names(w), "predID")])
+})
+
+# Reference spatial synchrony: the static extended dataset's between-location correlation, across all 60
+# synthetic campaigns, averaged across all location pairs. One value per constituent.
+ref_sync_spatial <- sapply(constituents, function(cc) mean_offdiag(cor(t(wide_extended[[cc]]))))
+names(ref_sync_spatial) <- constituents
+
+# Reference cross-variable synchrony: the static extended dataset's constituents[1]-constituents[2]
+# correlation across all 60 synthetic campaigns at each location, averaged across all m locations.
+ref_sync_cross <- mean(sapply(seq_along(common_ids), function(j) {
+  cor(wide_extended[[constituents[1]]][j, ], wide_extended[[constituents[2]]][j, ])
+}), na.rm = TRUE)
+
+ref_sync     <- c(ref_sync_spatial, Cross = ref_sync_cross)
+metric_names <- c(constituents, "Cross")
+
+#### Field setup, shared m, validated rho ####
+fs <- nm_field_setups[constituents]   # this constituent pair's two field setups
+
+for (cc in constituents) {
+  rho <- fs[[cc]]$temporal_rho
+  if (rho < 0 || rho >= 1) {
+    stop(cc, " temporal_rho (", rho, ") is outside [0, 1) -- this exponential-decay ",
+         "temporal correlation can't represent a negative value; see 02_build_synthetic_data.R's Part D.")
+  }
+}
+
+m <- fs[[constituents[1]]]$setup$m
+if (fs[[constituents[2]]]$setup$m != m) {
+  stop("field_setups for ", constituents[1], " and ", constituents[2],
+       " have different numbers of predpts locations -- can't compute cross-variable synchrony.")
+}
+
+# One synthetic field (m x n, natural scale) for one constituent, given a standard-normal draw z (m x n)
+simulate_field <- function(cc, z, t_sample, doy_sample) {
+  setup   <- fs[[cc]]$setup
+  beta    <- fs[[cc]]$beta
+  rho     <- fs[[cc]]$temporal_rho
+  ref_doy <- fs[[cc]]$ref_doy
+  n       <- length(t_sample)
   
   # spatially-correlated noise, then correlated across campaigns (red noise)
-  spatial_noise <- t(fs$setup$L_space) %*% z
+  spatial_noise <- t(setup$L_space) %*% z
   elapsed_days  <- abs(outer(t_sample, t_sample, "-")) / time_unit_days
   time_chol     <- chol(rho ^ elapsed_days + diag(1e-8, n))
   noise         <- spatial_noise %*% t(time_chol)
   
-  # seasonal shift relative to ref_doy
-  ref_shift <- beta[3] * sin(2 * pi * fs$ref_doy / 365) + beta[4] * cos(2 * pi * fs$ref_doy / 365)
+  # seasonal shift, relative to ref_doy
+  ref_shift <- beta[3] * sin(2 * pi * ref_doy / 365) + beta[4] * cos(2 * pi * ref_doy / 365)
   shift     <- beta[3] * sin(2 * pi * doy_sample / 365) + beta[4] * cos(2 * pi * doy_sample / 365) - ref_shift
   shift_mat <- matrix(shift, nrow = m, ncol = n, byrow = TRUE)
   
-  exp(fs$setup$mu_cond + shift_mat + noise)
+  exp(setup$mu_cond + shift_mat + noise)  # m x n, natural scale
 }
 
-# Reference synchrony metrics from the static extended dataset (all synthetic months, all locations)
-reference_synchrony <- function(synthetic_extended, constituents) {
-  wide <- lapply(constituents, function(cc) {
-    synthetic_extended %>%
-      filter(Constituent == cc) %>%
-      select(all_of(c(ext_time_col, "predID", "Conc"))) %>%
-      pivot_wider(names_from = predID, values_from = Conc) %>%
-      arrange(.data[[ext_time_col]]) %>%
-      select(-all_of(ext_time_col)) %>%
-      as.matrix()
-  })
-  names(wide) <- var_pair
+#### The Monte Carlo loop ####
+sync_mc_results_list <- list()
+
+for (n in sync_grid) {
   
-  # make sure both constituents have locations in the same column order
-  common <- intersect(colnames(wide[[1]]), colnames(wide[[2]]))
-  wide   <- lapply(wide, function(w) w[, common, drop = FALSE])
+  draws <- matrix(NA_real_, nrow = n_iter, ncol = length(metric_names),
+                  dimnames = list(NULL, metric_names))
   
-  c(
-    setNames(sapply(var_pair, function(cc) mean_offdiag(cor(wide[[cc]]))), paste0("Spatial_", var_pair)),
-    Cross = mean(sapply(seq_along(common), function(j) cor(wide[[1]][, j], wide[[2]][, j])), na.rm = TRUE)
-  )
+  for (i in seq_len(n_iter)) {
+    
+    # Step 1: draw n random campaign dates across the 5-year synthetic span, shared by both constituents
+    t_sample   <- sort(runif(n, 0, total_days))
+    doy_sample <- t_sample %% 365.25
+    
+    # Step 2: standard-normal draws, correlated across the two constituents at rho_cross
+    z1 <- matrix(rnorm(m * n), nrow = m, ncol = n)
+    z2 <- rho_cross * z1 + sqrt(1 - rho_cross^2) * matrix(rnorm(m * n), nrow = m, ncol = n)
+    
+    # Steps 3-4: spatial + temporal structure, seasonal shift, back-transform
+    field1 <- simulate_field(constituents[1], z1, t_sample, doy_sample)
+    field2 <- simulate_field(constituents[2], z2, t_sample, doy_sample)
+    
+    # Synchrony metrics for this draw
+    draws[i, constituents[1]] <- mean_offdiag(cor(t(field1)))
+    draws[i, constituents[2]] <- mean_offdiag(cor(t(field2)))
+    draws[i, "Cross"]         <- mean(row_cor(field1, field2), na.rm = TRUE)
+  }
+  
+  sync_mc_results_list[[paste(n)]] <- as_tibble(draws) %>%
+    mutate(N = n) %>%
+    pivot_longer(all_of(metric_names), names_to = "Metric", values_to = "Sync") %>%
+    mutate(Ref_Sync = ref_sync[Metric])
+  
+  message("Finished N = ", n)
 }
 
-#### Monte Carlo function (one watershed) ####
-run_synchrony_mc <- function(field_setups, synthetic_extended, ws, constituents, rho_cross, actual_n) {
-  
-  fx <- field_setups[[constituents[1]]]
-  fy <- field_setups[[constituents[2]]]
-  
-  for (cc in constituents) {
-    rho <- field_setups[[cc]]$temporal_rho
-    if (rho < 0 || rho >= 1) {
-      stop(ws, " ", cc, " temporal_rho (", rho, ") is outside [0, 1) -- this exponential-decay ",
-           "temporal correlation can't represent a negative value; see 02_build_synthetic_data.R's Part D.")
-    }
-  }
-  if (fx$setup$m != fy$setup$m) stop(ws, ": NPOC and TDN field setups have different numbers of locations")
-  if (!ext_time_col %in% names(synthetic_extended)) {
-    stop("ext_time_col ('", ext_time_col, "') not found in the extended dataset. Columns are: ",
-         paste(names(synthetic_extended), collapse = ", "))
-  }
-  
-  m <- fx$setup$m
-  
-  # Fixed subset of locations for the spatial metrics (same across all iterations)
-  site_idx <- if (m > max_sites) sort(sample.int(m, max_sites)) else seq_len(m)
-  
-  ref <- reference_synchrony(synthetic_extended, constituents)
-  metric_names <- names(ref)   # Spatial_NPOC, Spatial_TDN, Cross
-  
-  mc_results <- list()
-  
-  for (n in sync_grid) {
-    
-    draws <- matrix(NA_real_, nrow = n_iter, ncol = length(metric_names),
-                    dimnames = list(NULL, metric_names))
-    
-    for (i in seq_len(n_iter)) {
-      
-      # Step 1: random campaign dates across the 5-year synthetic span (shared by both constituents)
-      t_sample   <- sort(runif(n, 0, total_days))
-      doy_sample <- t_sample %% 365.25
-      
-      # Step 2: standard-normal draws; TDN is correlated with NPOC at rho_cross
-      zx <- matrix(rnorm(m * n), nrow = m, ncol = n)
-      zy <- rho_cross * zx + sqrt(1 - rho_cross^2) * matrix(rnorm(m * n), nrow = m, ncol = n)
-      
-      # Steps 3-4: spatial + temporal structure, seasonal shift, back-transform
-      field_x <- simulate_field(fx, zx, t_sample, doy_sample)
-      field_y <- simulate_field(fy, zy, t_sample, doy_sample)
-      
-      # Synchrony metrics (Pearson r across the n campaigns)
-      draws[i, 1] <- mean_offdiag(cor(t(field_x[site_idx, , drop = FALSE])))
-      draws[i, 2] <- mean_offdiag(cor(t(field_y[site_idx, , drop = FALSE])))
-      draws[i, 3] <- mean(row_cor(field_x, field_y), na.rm = TRUE)
-    }
-    
-    mc_results[[paste(n)]] <- as_tibble(draws) %>%
-      mutate(N = n) %>%
-      pivot_longer(all_of(metric_names), names_to = "Metric", values_to = "Sync") %>%
-      mutate(Ref_Sync = ref[Metric])
-    
-    message(ws, ": finished N = ", n)
-  }
-  
-  bind_rows(mc_results) %>% mutate(Watershed = ws, .before = 1)
-}
+## Combine, summarize, and plot
+sync_mc_results <- bind_rows(sync_mc_results_list)
 
-#### Run ####
-nm_field_setups <- readRDS(file.path(data_out_dir, "nm_field_setups.rds"))
-br_field_setups <- readRDS(file.path(data_out_dir, "br_field_setups.rds"))   # assumed name, mirrors nm_
-
-sync_mc_results <- bind_rows(
-  run_synchrony_mc(nm_field_setups, nm_toy_extended, "NM", constituents, rho_cross["nm"], actual_n_campaigns["nm"]),
-  run_synchrony_mc(br_field_setups, br_toy_extended, "BR", constituents, rho_cross["br"], actual_n_campaigns["br"])
-)
-
-#### Summarize ####
-# Absolute bias (median - reference) is used instead of percent bias, because correlations can sit near 0,
-# where a percent difference blows up.
 sync_mc_summary <- sync_mc_results %>%
-  group_by(Watershed, Metric, N) %>%
-  summarize(Median_Sync = median(Sync, na.rm = TRUE),
-            P05_Sync    = quantile(Sync, 0.05, na.rm = TRUE),
-            P95_Sync    = quantile(Sync, 0.95, na.rm = TRUE),
-            Ref_Sync    = first(Ref_Sync), .groups = "drop") %>%
+  group_by(Metric, N) %>%
+  summarize(Median_Sync = median(Sync), P05_Sync = quantile(Sync, 0.05), P95_Sync = quantile(Sync, 0.95),
+            Ref_Sync = first(Ref_Sync), .groups = "drop") %>%
   mutate(Bias = Median_Sync - Ref_Sync)
 
 print(sync_mc_summary, n = Inf)
-write_csv(sync_mc_summary, file.path(data_out_dir, "Sync_MC_summary.csv"))
+write_csv(sync_mc_summary, file.path(data_out_dir, "synchrony_MC_summary.csv"))
 
-#### Plot ####
+# One row per metric, this analysis's own Bias at the N closest to actual_n_campaigns (sync_grid may not
+# contain actual_n_campaigns exactly, since counts below 3 are dropped)
 bias_annot <- sync_mc_summary %>%
-  mutate(actual_n = actual_n_campaigns[tolower(Watershed)]) %>%
-  group_by(Watershed, Metric) %>%
-  slice_min(abs(N - actual_n), n = 1, with_ties = FALSE) %>%   # nearest grid point to the real N
+  group_by(Metric) %>%
+  slice_min(abs(N - actual_n_campaigns), n = 1, with_ties = FALSE) %>%
   ungroup() %>%
   mutate(label = sprintf("At N=%d: %+.2f bias", N, Bias))
-
-vline_df <- distinct(bias_annot, Watershed, Metric, actual_n)
 
 p_sync <- ggplot(sync_mc_summary, aes(x = N, y = Median_Sync)) +
   geom_ribbon(aes(ymin = P05_Sync, ymax = P95_Sync), fill = "grey70", alpha = 0.5) +
   geom_line() + geom_point(size = 1.5) +
   geom_hline(aes(yintercept = Ref_Sync), color = "blue", linetype = "dashed") +
-  geom_vline(data = vline_df, aes(xintercept = actual_n), color = "red", linetype = "dashed") +
+  geom_vline(xintercept = actual_n_campaigns, color = "red", linetype = "dashed") +
   geom_text(data = bias_annot, aes(x = Inf, y = Inf, label = label),
             hjust = 1.1, vjust = 1.5, size = 3.5, color = "red", inherit.aes = FALSE) +
-  facet_grid(Watershed ~ Metric, scales = "free_y") +
+  facet_wrap(~ Metric, scales = "free_y", ncol = 3) +
   labs(x = "Sample size (N campaigns)", y = "Synchrony (median, 5th-95th pct band)",
-       title = "Temporal sample-size sensitivity of synchrony",
-       subtitle = "Blue = reference synchrony (static extended dataset, all 60 synthetic months); red = actual sample size, annotated with bias at the nearest tested N. Each iteration redraws a fresh spatiotemporal field.") +
+       title = "Temporal sample-size sensitivity of NM synchrony",
+       subtitle = "Blue = reference synchrony (static extended dataset, all 60 synthetic months); red = actual sample size, annotated with bias at the nearest tested N. Each Monte Carlo iteration redraws a fresh spatiotemporal field, campaign times drawn at random across a 5-year span.") +
   theme_bw()
 
 print(p_sync)
-ggsave(file.path(plot_dir, "Sync_MC_plot.png"), p_sync, width = 11, height = 6, dpi = 150)
+ggsave(file.path(plot_dir, "synchrony_MC_plot_nm.png"), p_sync, width = 10, height = 4, dpi = 150)
