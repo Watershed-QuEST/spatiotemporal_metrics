@@ -4,6 +4,8 @@
 # Author: Alex Webster, 2026-08-23 (with help building complex helper functions from Claude version 1.24012.9 (03c61d) 2026-07-24T04:59:17.000Z... heavily reviewed and edited by A. Webster)
 # Last update (Person, Date): Alex Webster, 2026-09-08
 # Bre Rivera Waterman, 2026-09-09 pulling in package/helper function and comparing to previous calculations
+# Bre Rivera Waterman,09/29/2026 for conceptual fig values
+
 
 
 # Requires: 02_build_synthetic_data.R must be run first to produce data/nm_clean.csv, data/nm_field_setups.rds, and data/nm_synthetic_extended.csv. If these are available, no need to rerun 02_build_synthetic_data.R
@@ -24,7 +26,7 @@
 
 #### Packages ####
 library(tidyverse)
-source("cv_helper.R")
+source("cv_fxhelper.R")
 
 
 #### Configure in/outputs and file structure ####
@@ -102,9 +104,9 @@ CVt_by_site.2 <-
             n_sites = n_used,
             CVt = temporal_cv)
 
-print(CVt_by_campaign.2)
+print(CVt_by_site.2)
 
-#write_csv(CVt_by_campaign.2, file.path(data_out_dir, "CVs_by_campaign.2.csv"))
+#write_csv(CVt_by_site.2, file.path(data_out_dir, "CVt_by_site.2.csv"))
 
 # Mean and SD across campaign-level CVs for each constituent
 CVt_observed.2 <- CVt_result$watershed_summary %>%
@@ -113,14 +115,14 @@ CVt_observed.2 <- CVt_result$watershed_summary %>%
             Mean_CVt = mean_temporal_cv,
             SD_CVt = sd_temporal_cv )
 
-print(CVs_observed.2)
+print(CVt_observed.2)
 
 #write_csv(CVs_observed.2, file.path(data_out_dir, "CVs_observed.2.csv"))
 
 #### PART A.3 -- Compare original and package results ####
-site_comparison <- CVt_by_site.2 %>%
+site_comparison <- CVt_observed %>%
   mutate(CVt_original_rounded = round(CVt, 2)) %>%
-  full_join(CVt_by_campaign.2 %>%
+  full_join(CVt_by_site.2 %>%
               rename(
                 #n_sites_package = n_sites,
                      CVt_package = CVt ),
@@ -156,14 +158,14 @@ CVt_plot_data <-
   bind_rows(CVt_observed %>%
               transmute(Constituent, Site, CVt,
                         Approach = "Original QuEST calculation" ),
-            CVt_by_campaign.2 %>%
+            CVt_by_site.2 %>%
               transmute(Constituent,Site, CVt, Approach = "CV helper")) %>%
   filter(!is.na(CVt)) %>%
   mutate(Approach = factor(Approach,
                            levels = c("Original QuEST calculation", "CV helper") ) )
 
 
-p_cv_comparison <- 
+p_cvt_comparison <- 
   ggplot(CVt_plot_data, aes(x = Approach, y = CVt, fill = Approach)) +
   geom_violin(
     trim = FALSE,
@@ -181,17 +183,20 @@ p_cv_comparison <-
     values = c(
       "Original QuEST calculation" = "#4C78A8",
       "CV helper" = "#F58518" )) +
-  labs(title = "Spatial CV by calculation approach",
-       subtitle = "Each point is one sampling campaign",
+  labs(title = "Temporal CV by calculation approach",
+       subtitle = "Each point is one sampling location",
        x = NULL,
-       y = "Spatial coefficient of variation (CVs)",
+       y = "Temporal coefficient of variation (CVt)",
        fill = "Approach") +
   theme_bw() +
   theme(legend.position = "none",
         axis.text.x = element_text(angle = 20, hjust = 1))
 
-p_cv_comparison
+p_cvt_comparison
 
+
+#### PART A.4 -- overall average for conceptual figure ####
+CVt_plot_data %>% summarise(mean = mean(CVt), sd = sd(CVt))
 
 
 #### PART B -- Monte Carlo temporal sensitivity analysis ####
@@ -287,6 +292,8 @@ temporal_mc_summary <- temporal_mc_results %>%
 print(temporal_mc_summary, n = Inf)
 
 write_csv(temporal_mc_summary, file.path(data_out_dir, "CVt_MC_summary.csv"))
+
+
 
 # One row per constituent, the analysis's own Pct_Bias at N = actual_n_campaigns
 bias_annot <- temporal_mc_summary %>%

@@ -4,6 +4,8 @@
 # Author: Alex Webster, 2026-07-28 (with help building complex helper functions from Claude version 1.24012.9 (03c61d) 2026-07-24T04:59:17.000Z... heavily reviewed and edited by A. Webster)
 # Last update (Person, Date): Alex Webster, 2026-09-07
 # Bre Rivera Waterman, 2026-09-01 pulling in package/helper function and comparing to previous calculations
+# Bre Rivera Waterman, 2026-09-29 for conceptual fig values
+
 
 # Requires: 02_build_synthetic_data.R must be run to produce data/[dataset]_clean.csv for each dataset and 
 
@@ -16,7 +18,7 @@
 
 #### Packages ####
 library(tidyverse)
-source("cv_helper.R")
+source("cv_fxhelper.R")
 
 #### Configure in/outputs and file structure ####
 
@@ -173,3 +175,7 @@ p_cv_comparison <-
         axis.text.x = element_text(angle = 20, hjust = 1))
 
 p_cv_comparison
+
+
+#### PART A.4 -- overall average for conceptual figure ####
+CVs_by_campaign %>% summarise(mean = mean(CVs), sd = sd(CVs))

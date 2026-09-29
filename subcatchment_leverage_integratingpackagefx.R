@@ -5,7 +5,7 @@
 # Purpose: to plot leverage data from NM and BR for the collab. paper using the semi-toy data
 #Author: Andrew Ali, Bre Rivera Waterman
 #rerwitten: 08/13/2026 (from prior metric codes) -> package helper fxs implemented 09/24/2026
-#last modified: 09/24/2026
+#last modified: 09/29/2026 for conceptual fig values
 
 #### Packages ####
 library(googledrive) 
@@ -419,3 +419,7 @@ p2 <- leverage_plot_data %>%
   )
 
 p2
+
+
+#### PART A.4 -- overall average for conceptual figure ####
+leverage_comparison %>% group_by(Project, leverage_variant) %>% summarise(mean = mean(leverage_original), sd = sd(leverage_original))
