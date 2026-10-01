@@ -2,7 +2,7 @@
 
 # Project: QuEST Spatiotemporal Metrics Commentary
 # Author: Alex Webster, 2026-07-28 (with help building complex helper functions from Claude version 1.24012.9 (03c61d) 2026-07-24T04:59:17.000Z... heavily reviewed and edited by A. Webster)
-# Last update (Person, Date): William Mejia, 29-Sep-2026
+# Last update (Person, Date): William Mejia, 01-OCT-2026
 
 # This script calculates source area residual (SAR) for QuEST toy
 # NM-BR dataset, used for the planned commentary manuscript on
@@ -52,45 +52,49 @@ toy <- toy %>%
 mass_cols <- c("npoc_mass", "tdn_mass")
 
 
+
 #===============================================================================
 # SITE-LEVEL SUMMARY
 #===============================================================================
-#
-# The regression models are fit using site-level mean values.
-#
-# For each site:
-#   - Project = watershed
-#   - Area = site contributing area (upstream of sampling point)
-#   - Q = mean discharge
-#   - mass = mean mass load
-#
-# The AQ model therefore uses mean site discharge when fitting the regression.
-#===============================================================================
+
+# Calculate the mean of log-transformed mass loads and discharge
+# for each site. These site-level means are used to fit the regressions.
+# Note: I was previously averaging site values, then log-transforming.
+
 
 site_summary <- toy %>%
+  mutate(
+    logQ = log10(ifelse(Q > 0, Q, NA_real_)),
+    logNPOC = log10(ifelse(npoc_mass > 0, npoc_mass, NA_real_)),
+    logTDN = log10(ifelse(tdn_mass > 0, tdn_mass, NA_real_))
+  ) %>%
   group_by(Site) %>%
   summarise(
-    
     Project = first(Project),
     area_m2 = first(Area.m2),
-    
-    across(
-      all_of(c("Q", mass_cols)),
-      ~ mean(.x, na.rm = TRUE),
-      .names = "{.col}_mean"
-    ),
-    
+
+    logQ = if (all(is.na(logQ))) {
+      NA_real_
+    } else {
+      mean(logQ, na.rm = TRUE)
+    },
+
+    logNPOC = if (all(is.na(logNPOC))) {
+      NA_real_
+    } else {
+      mean(logNPOC, na.rm = TRUE)
+    },
+
+    logTDN = if (all(is.na(logTDN))) {
+      NA_real_
+    } else {
+      mean(logTDN, na.rm = TRUE)
+    },
+
     .groups = "drop"
   ) %>%
   mutate(
-    
-    # Site-level log-transformed predictors
-    logArea = log10(area_m2),
-    logQ    = log10(ifelse(Q_mean > 0, Q_mean, NA)),
-    
-    # Site-level log-transformed mass
-    logNPOC = log10(ifelse(npoc_mass_mean > 0, npoc_mass_mean, NA)),
-    logTDN  = log10(ifelse(tdn_mass_mean > 0, tdn_mass_mean, NA))
+    logArea = log10(area_m2)
   )
 
 
@@ -98,7 +102,7 @@ site_summary <- toy %>%
 # FULL DATASET LOG TRANSFORMS
 #===============================================================================
 #
-# These are used for calculating observation-level residuals.
+# Individual observations must be log-transformed to calculate residuals.
 #
 # Area is constant within each site, while Q can vary among observations.
 #===============================================================================
@@ -122,126 +126,133 @@ toy_log <- toy %>%
   )
 
 
+
 #===============================================================================
-# AREA-ONLY (A) MODELS
-#===============================================================================
-#
-# Model formulation:
-#
-#   log10(M_i) = alpha_A + beta_A * log10(A_i) + epsilon_i
-#
-# The fitted prediction is:
-#
-#   yhat_i,A = alphahat_A + betahat_A * log10(A_i)
-#
-# SAR:
-#
-#   SAR_ij,A = log10(M_ij) - yhat_i,A
-#
+# FIT SEPARATE MODELS FOR NM AND BR
 #===============================================================================
 
-lm_A <- list(
+# Previous code had model that would use data from both catchments, this creates
+# individual models for each catchment. This in turn now creates 8 separate   
+# models, 4 for each catchment, 2 for each solute (NPOC and TDN), 
+# and 2 for each model type (Area-only and Area + Discharge).
+
+watersheds <- c("NM", "BR")
+
+# Area-only models
+lm_A <- list()
+
+# Area + discharge models
+lm_AQ <- list()
+
+for (w in watersheds) {
   
-  logNPOC = lm(
-    logNPOC ~ logArea,
-    data = site_summary
-  ),
+  project_data <- site_summary %>%
+    filter(Project == w)
   
-  logTDN = lm(
-    logTDN ~ logArea,
-    data = site_summary
-  )
-)
-
-
-#===============================================================================
-# AREA + DISCHARGE (AQ) MODELS (this is the model the NM team uses IRL)
-#===============================================================================
-#
-# Model formulation:
-#
-#   log10(M_i) =
-#       alpha_AQ
-#       + beta_A * log10(A_i)
-#       + beta_Q * log10(Q_i)
-#       + epsilon_i
-#
-# The fitted prediction is:
-#
-#   yhat_i,AQ =
-#       alphahat_AQ
-#       + betahat_A * log10(A_i)
-#       + betahat_Q * log10(Q_i)
-#
-# For observation-level predictions, individual observation Q is used.
-#
-# SAR:
-#
-#   SAR_ij,AQ = log10(M_ij) - yhat_ij,AQ
-#
-#===============================================================================
-
-lm_AQ <- list(
-  
-  logNPOC = lm(
-    logNPOC ~ logArea + logQ,
-    data = site_summary
-  ),
-  
-  logTDN = lm(
-    logTDN ~ logArea + logQ,
-    data = site_summary
-  )
-)
-
-
-#===============================================================================
-# PREDICTIONS + RESIDUALS
-#===============================================================================
-
-#-------------------------------------------------------------------------------
-# Area-only predictions and SARs
-#-------------------------------------------------------------------------------
-
-for (solute in names(lm_A)) {
-  
-  pred_name <- paste0("PL_", solute, "_A")
-  res_name  <- paste0("SAR_", solute, "_A")
-  
-  toy_log[[pred_name]] <-
-    predict(
-      lm_A[[solute]],
-      newdata = toy_log
+  # Area-only models
+  lm_A[[w]] <- list(
+    
+    logNPOC = lm(
+      logNPOC ~ logArea,
+      data = project_data
+    ),
+    
+    logTDN = lm(
+      logTDN ~ logArea,
+      data = project_data
     )
+  )
   
-  toy_log[[res_name]] <-
-    toy_log[[solute]] - toy_log[[pred_name]]
+  # Area + discharge models
+  lm_AQ[[w]] <- list(
+    
+    logNPOC = lm(
+      logNPOC ~ logArea + logQ,
+      data = project_data
+    ),
+    
+    logTDN = lm(
+      logTDN ~ logArea + logQ,
+      data = project_data
+    )
+  )
 }
 
 
-#-------------------------------------------------------------------------------
-# Area + discharge predictions and SARs
-#-------------------------------------------------------------------------------
+# Inspect model summaries
+lm_A$NM$logNPOC |> summary()
+lm_A$NM$logTDN  |> summary()
+lm_A$BR$logNPOC |> summary()
+lm_A$BR$logTDN  |> summary()
 
-for (solute in names(lm_AQ)) {
+lm_AQ$NM$logNPOC |> summary()
+lm_AQ$NM$logTDN  |> summary()
+lm_AQ$BR$logNPOC |> summary()
+lm_AQ$BR$logTDN  |> summary()
+
+
+
+#===============================================================================
+# PREDICTIONS + RESIDUALS BY PROJECT
+#===============================================================================
+
+for (w in watersheds) {
   
-  pred_name <- paste0("PL_", solute, "_AQ")
-  res_name  <- paste0("SAR_", solute, "_AQ")
+  project_rows <- which(toy_log$Project == w)
   
-  toy_log[[pred_name]] <-
-    predict(
-      lm_AQ[[solute]],
-      newdata = toy_log
+  project_observations <- toy_log[project_rows, ]
+  
+  #---------------------------------------------------------------------------
+  # Area-only predictions and SARs
+  #---------------------------------------------------------------------------
+  
+  for (solute in names(lm_A[[w]])) {
+    
+    pred_name <- paste0("PL_", solute, "_A_", w)
+    res_name  <- paste0("SAR_", solute, "_A_", w)
+    
+    predictions <- predict(
+      lm_A[[w]][[solute]],
+      newdata = project_observations
     )
+    
+    toy_log[[pred_name]] <- NA_real_
+    toy_log[[pred_name]][project_rows] <- predictions
+    
+    toy_log[[res_name]] <- NA_real_
+    toy_log[[res_name]][project_rows] <-
+      project_observations[[solute]] - predictions
+  }
   
-  toy_log[[res_name]] <-
-    toy_log[[solute]] - toy_log[[pred_name]]
+  
+  #---------------------------------------------------------------------------
+  # Area + discharge predictions and SARs
+  #---------------------------------------------------------------------------
+  
+  for (solute in names(lm_AQ[[w]])) {
+    
+    pred_name <- paste0("PL_", solute, "_AQ_", w)
+    res_name  <- paste0("SAR_", solute, "_AQ_", w)
+    
+    predictions <- predict(
+      lm_AQ[[w]][[solute]],
+      newdata = project_observations
+    )
+    
+    toy_log[[pred_name]] <- NA_real_
+    toy_log[[pred_name]][project_rows] <- predictions
+    
+    toy_log[[res_name]] <- NA_real_
+    toy_log[[res_name]][project_rows] <-
+      project_observations[[solute]] - predictions
+  }
 }
 
 
 #===============================================================================
 # View OBSERVATION-LEVEL RESIDUALS
 #===============================================================================
+
 
 obs_level_data <- toy_log %>%
   select(
@@ -251,14 +262,29 @@ obs_level_data <- toy_log %>%
     Q,
     logArea,
     logQ,
-    
-    # SARs
     starts_with("SAR_"),
-    
-    # Predictions
-    starts_with("PL_"))
+    starts_with("PL_")
+  )
 
-View(obs_level_data) #might be easier to separate model output
+# NM observations and NM model columns
+View(
+  obs_level_data %>%
+    filter(Project == "NM") %>%
+    select(
+      Site, Project, Area.m2, Q, logArea, logQ,
+      ends_with("_NM")
+    )
+)
+
+# BR observations and BR model columns
+View(
+  obs_level_data %>%
+    filter(Project == "BR") %>%
+    select(
+      Site, Project, Area.m2, Q, logArea, logQ,
+      ends_with("_BR")
+    )
+)
 
 #===============================================================================
 # RESIDUAL SUMMARIZATION
@@ -306,87 +332,9 @@ residual_summary <- toy_log %>%
 
 View(residual_summary)
 
-#===============================================================================
-# PLOTS: AREA-SCALING RELATIONSHIPS BY WATERSHED
-#===============================================================================
-
-watersheds <- c("NM", "BR")
-
-for (w in watersheds) {
-  
-  p <- ggplot(
-    site_summary[
-      site_summary$Project == w,
-    ],
-    aes(
-      x = logArea,
-      y = logNPOC
-    )
-  ) +
-    
-    geom_point(
-      size = 3
-    ) +
-    
-    geom_smooth(
-      method = "lm",
-      se = FALSE,
-      color = "black"
-    ) +
-    
-    stat_poly_eq(
-      aes(
-        label = paste(
-          ..eq.label..,
-          ..rr.label..,
-          sep = "~~~"
-        )
-      ),
-      formula = y ~ x,
-      parse = TRUE,
-      size = 5
-    ) +
-    
-    labs(
-      x = expression(
-        Log[10] ~ Subcatchment ~ Area ~ (m^2)
-      ),
-      
-      y = expression(
-        Log[10] ~ Site ~ Avg. ~ DOC ~ Mass
-      ),
-      
-      title = paste0(
-        w,
-        ": Log-Log Relationship Between Site-Averaged DOC Mass\n",
-        "and Subcatchment Area"
-      )
-    ) +
-    
-    theme_classic(
-      base_size = 14
-    )
-  
-  print(p)
-  
-  ggsave(
-    filename = paste0(
-      "04_figures/",
-      w,
-      "_NPOC_area_scaling.png"
-    ),
-    
-    plot = p,
-    width = 6,
-    height = 4,
-    dpi = 300
-  )
-}
-
-#must do the same for TDN
 
 #===============================================================================
-# PLOTS: RESIDUAL BAR PLOTS BY WATERSHED (this graph is confusing to me but og script has it, suggest change?)
+# PLOTS: RESIDUAL BAR PLOTS BY WATERSHED
 #===============================================================================
 
 ylims <- list(
@@ -394,63 +342,72 @@ ylims <- list(
   BR = c(-3, 1.2)
 )
 
-
 for (w in watersheds) {
   
-  #------------------------------------------------------------------------
+  # Column names for this project's area-only SARs
+  sar_A_mean <- paste0("SAR_logTDN_A_", w, "_mean")
+  sar_A_se   <- paste0("SAR_logTDN_A_", w, "_se")
+  
+  # Column names for this project's area + discharge SARs
+  sar_AQ_mean <- paste0("SAR_logTDN_AQ_", w, "_mean")
+  sar_AQ_se   <- paste0("SAR_logTDN_AQ_", w, "_se")
+  
+  
+  #---------------------------------------------------------------------------
   # Area-only SAR
-  #------------------------------------------------------------------------
+  #---------------------------------------------------------------------------
   
   p_A <- ggplot(
-    residual_summary[
-      residual_summary$Project == w,
-    ]
+    residual_summary %>%
+      filter(Project == w)
   ) +
     
-    geom_bar(
+    geom_hline(
+      yintercept = 0,
+      linetype = "dashed",
+      color = "black"
+    ) +
+    
+    geom_col(
       aes(
-        x = reorder(
-          Site,
-          SAR_logTDN_A_mean
-        ),
-        y = SAR_logTDN_A_mean
+        x = reorder(Site, .data[[sar_A_mean]]),
+        y = .data[[sar_A_mean]]
       ),
-      
-      stat = "identity",
       fill = "skyblue",
       alpha = 0.7
     ) +
     
     geom_errorbar(
       aes(
-        x = Site,
-        ymin = SAR_logTDN_A_mean -
-          SAR_logTDN_A_se,
-        ymax = SAR_logTDN_A_mean +
-          SAR_logTDN_A_se
+        x = reorder(Site, .data[[sar_A_mean]]),
+        ymin = .data[[sar_A_mean]] - .data[[sar_A_se]],
+        ymax = .data[[sar_A_mean]] + .data[[sar_A_se]]
       ),
-      
       width = 0.4,
       colour = "orange",
       alpha = 0.9,
-      linewidth = 1.3
+      linewidth = 1.1
     ) +
     
-    ylim(
-      ylims[[w]]
+    coord_cartesian(
+      ylim = ylims[[w]]
     ) +
     
     labs(
       x = "Site",
-      y = "TDN SAR (Area only)",
-      title = paste0(
-        w,
-        ": Site-Level TDN SARs - Area Only"
-      )
+      y = expression("Mean TDN SAR (" * log[10] * " scale)"),
+      title = paste0(w, ": Site-Level TDN SARs — Area Only")
     ) +
     
     theme_classic(
       base_size = 14
+    ) +
+    
+    theme(
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 1
+      )
     )
   
   print(p_A)
@@ -461,68 +418,68 @@ for (w in watersheds) {
       w,
       "_TDN_SAR_A.png"
     ),
-    
     plot = p_A,
-    width = 6,
-    height = 4,
+    width = 7,
+    height = 5,
     dpi = 300
   )
   
   
-  #------------------------------------------------------------------------
+  #---------------------------------------------------------------------------
   # Area + discharge SAR
-  #------------------------------------------------------------------------
+  #---------------------------------------------------------------------------
   
   p_AQ <- ggplot(
-    residual_summary[
-      residual_summary$Project == w,
-    ]
+    residual_summary %>%
+      filter(Project == w)
   ) +
     
-    geom_bar(
+    geom_hline(
+      yintercept = 0,
+      linetype = "dashed",
+      color = "black"
+    ) +
+    
+    geom_col(
       aes(
-        x = reorder(
-          Site,
-          SAR_logTDN_AQ_mean
-        ),
-        y = SAR_logTDN_AQ_mean
+        x = reorder(Site, .data[[sar_AQ_mean]]),
+        y = .data[[sar_AQ_mean]]
       ),
-      
-      stat = "identity",
       fill = "skyblue",
       alpha = 0.7
     ) +
     
     geom_errorbar(
       aes(
-        x = Site,
-        ymin = SAR_logTDN_AQ_mean -
-          SAR_logTDN_AQ_se,
-        ymax = SAR_logTDN_AQ_mean +
-          SAR_logTDN_AQ_se
+        x = reorder(Site, .data[[sar_AQ_mean]]),
+        ymin = .data[[sar_AQ_mean]] - .data[[sar_AQ_se]],
+        ymax = .data[[sar_AQ_mean]] + .data[[sar_AQ_se]]
       ),
-      
       width = 0.4,
       colour = "orange",
       alpha = 0.9,
-      linewidth = 1.3
+      linewidth = 1.1
     ) +
     
-    ylim(
-      ylims[[w]]
+    coord_cartesian(
+      ylim = ylims[[w]]
     ) +
     
     labs(
       x = "Site",
-      y = "TDN SAR (Area + discharge)",
-      title = paste0(
-        w,
-        ": Site-Level TDN SARs - Area + Discharge"
-      )
+      y = expression("Mean TDN SAR (" * log[10] * " scale)"),
+      title = paste0(w, ": Site-Level TDN SARs — Area + Discharge")
     ) +
     
     theme_classic(
       base_size = 14
+    ) +
+    
+    theme(
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 1
+      )
     )
   
   print(p_AQ)
@@ -533,13 +490,10 @@ for (w in watersheds) {
       w,
       "_TDN_SAR_AQ.png"
     ),
-    
     plot = p_AQ,
-    width = 6,
-    height = 4,
+    width = 7,
+    height = 5,
     dpi = 300
   )
 }
 
-# must look into what a negative residuals represents considering we 
-# have yet to see it in our real data. is it as common as portayed here?
