@@ -1,3 +1,5 @@
-Constituent,n_sites_used,CVt_observed
-NPOC..mg.C.L.,22,0.2088838516947811
-TDN..mg.N.L.,22,0.24404272765339582
+Constituent,Catchment,n_sites_used,CVt_observed
+NPOC..mg.C.L.,br,19,0.1458619818319745
+NPOC..mg.C.L.,nm,22,0.20888385169478113
+TDN..mg.N.L.,br,19,0.20765309281993086
+TDN..mg.N.L.,nm,22,0.24404272765339582
