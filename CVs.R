@@ -5,6 +5,7 @@
 # Last update (Person, Date): Alex Webster, 2026-09-07
 # Bre Rivera Waterman, 2026-09-01 pulling in package/helper function and comparing to previous calculations
 # Bre Rivera Waterman, 2026-09-29 for conceptual fig values
+# Alex Webster, 2026-10-06 to add br analysis
 
 
 # Requires: 02_build_synthetic_data.R must be run to produce data/[dataset]_clean.csv for each dataset and 
@@ -28,7 +29,12 @@ plot_dir     <- "plots"
 # Constituents to include in this analysis -- must match column names in data
 constituents <- c("NPOC..mg.C.L.", "TDN..mg.N.L.")
 
-clean            <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
+clean_nm            <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
+clean_nm$Catchment = "nm"
+clean_br            <- read_csv(file.path(data_out_dir, "br_clean.csv"), show_col_types = FALSE)
+clean_br$Catchment = "br"
+
+clean <- bind_rows(clean_nm, clean_br)
 
 #### PART A.1 -- Calculate CVs of real toy dataset ####
 # Each site's concentration averaged across its available real campaigns, then CV taken across sites.
@@ -42,7 +48,7 @@ for (cc in constituents) {
   
   by_campaign <- clean %>%
     filter(!is.na(.data[[cc]])) %>%
-    group_by(CampaignID) %>%
+    group_by(Catchment, CampaignID) %>%
     summarize(n_sites = n(),
               CVs = if (n() >= 2) sd(.data[[cc]]) / mean(.data[[cc]]) else NA_real_,
               .groups = "drop") %>%
@@ -82,7 +88,8 @@ CVs_by_campaign.2 <-
   transmute(Constituent = constituent,
             CampaignID,
             n_sites = n_used,
-            CVs = spatial_cv)
+            CVs = spatial_cv) %>%
+  mutate(Catchment = str_split_i(CampaignID, pattern = "_", i = 1))
 
 print(CVs_by_campaign.2)
 
@@ -138,10 +145,10 @@ print(summary_comparison, n = Inf)
 #visual comparison
 CVs_plot_data <- 
   bind_rows(CVs_by_campaign %>%
-              transmute(Constituent, CampaignID, CVs,
+              transmute(Catchment, Constituent, CampaignID, CVs,
                         Approach = "Original QuEST calculation" ),
             CVs_by_campaign.2 %>%
-              transmute(Constituent,CampaignID, CVs, Approach = "CV helper")) %>%
+              transmute(Catchment,Constituent,CampaignID, CVs, Approach = "CV helper")) %>%
   filter(!is.na(CVs)) %>%
   mutate(Approach = factor(Approach,
                            levels = c("Original QuEST calculation", "CV helper") ) )
@@ -154,7 +161,8 @@ p_cv_comparison <-
     alpha = 0.45,
     color = NA ) +
   geom_jitter(
-    width = 0.07,
+    aes(color = Catchment),
+    width = 0,
     height = 0,
     size = 1.8,
     alpha = 0.75 ) +
@@ -178,4 +186,7 @@ p_cv_comparison
 
 
 #### PART A.4 -- overall average for conceptual figure ####
-CVs_by_campaign %>% summarise(mean = mean(CVs), sd = sd(CVs))
+
+CVs_by_campaign %>% group_by(Catchment, Constituent) %>% summarise(mean = mean(CVs), sd = sd(CVs))
+
+
