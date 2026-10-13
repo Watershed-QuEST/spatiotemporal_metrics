@@ -8,7 +8,7 @@
 # Alex Webster, 2026-10-06 to add br analysis
 
 
-# Requires: 02_build_synthetic_data.R must be run to produce data/[dataset]_clean.csv for each dataset and 
+# Requires: 02_build_synthetic_data.R must be run to produce data/[dataset]_clean.csv for each dataset. If these are available, no need to rerun 02_build_synthetic_data.R
 
 # This script demonstrates how to calculate CVs, the spatial coefficient of variation (across sites, one value per sampling event) on three datasets: NM, BR, and Gu et al. 2021. 
 # Complementary sensitivity analyses can be found in CVs_sensitivity.R
