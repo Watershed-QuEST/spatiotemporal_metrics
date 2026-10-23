@@ -13,6 +13,7 @@
 #   PART C -- fit a log-normal area + seasonal (sin/cos DOY) model per constituent, and check its residuals for leftover temporal autocorrelation once SSN2's spatial mean and the seasonal cycle are both removed. This informs the red-noise parameter in Part E.
 #   PART D -- save a reusable set up per analyte/constituent that saves SSN2's kriged mean + spatial Cholesky factor, the seasonal coefficients, and a temporal autocorrelation estimate so that downstream scripts can each draw fresh Monte Carlo fields without recomputing the computationally-intensive Cholesky step. See notes in this section for an explanation of the Cholesky factor!
 #   PART E -- generate and save ONE static extended synthetic dataset. We want this to use for metrics that need more data to demonstrate than the real toy dataset alone. 
+#   PART F -- match synthetic data to real data spatially and temporally. This provides a column in the synthetic dataset that allows users to increase # of campaigns or # of sites while keeping it as similar as possible to the real data, or combine it with the real data in a sensible way.
 # REPEATED FOR EACH WATERSHED!
 
 # Requires: 01_build_spatial_data.R must be run first, and spatiotemporal_helpers.R must be saved in the same folder as this script.
@@ -31,6 +32,7 @@
 library(tidyverse)
 library(sf)
 library(SSN2)
+library(googledrive)
 
 # raster package messes with dplyr::select functionality in some sessions;
 # this keeps select() resolved to dplyr's version regardless.
@@ -544,6 +546,180 @@ ggsave(file.path(plot_dir, "Synthetic_extended_mean_by_month.png"), p_synth_chec
 
 
 
+#### PART F -- Match synthetic data to real data ####
+
+### First, compare the real and synthetic data equivalent in time and space. 
+
+circ_dist <- function(a, b) pmin(abs(a - b), 365.25 - abs(a - b))  # shared helper, not catchment-specific
+
+## nm - read in saved data
+ssn_object_nm <- readRDS("data/ssn_objects.rds")$nm
+clean_nm = read.csv(file.path(data_out_dir, "nm_clean.csv"))
+extended_nm = read_csv(file.path(data_out_dir, "nm_synthetic_extended.csv"), show_col_types = FALSE)
+extended_nm$Catchment = "nm"
+
+## nm - spatial match
+dist_list_nm  <- ssn_get_stream_distmat(ssn_object_nm, name = "predpts")
+# total routed distance, predpts (rows) x obs (cols):
+total_dist_nm <- t(dist_list_nm$dist.net1.a) + dist_list_nm$dist.net1.b
+# pid <-> Site/predID lookups
+obs_geom_nm  <- ssn_get_netgeom(ssn_object_nm$obs, reformat = TRUE)
+obs_geom_nm$Site <- ssn_object_nm$obs$Site
+pred_geom_nm <- ssn_get_netgeom(ssn_object_nm$preds$predpts, reformat = TRUE)
+pred_geom_nm$predID <- ssn_object_nm$preds$predpts$predID
+site_lookup_nm <- setNames(obs_geom_nm$Site, as.character(obs_geom_nm$pid))     # pid -> Site
+pred_lookup_nm <- setNames(pred_geom_nm$predID, as.character(pred_geom_nm$pid)) # pid -> predID
+# nearest predpt per real site
+a_nm <- t(dist_list_nm$dist.net1.a)   # pred (rows) x obs (cols): >0 iff pred is upstream of obs
+b_nm <- dist_list_nm$dist.net1.b      # pred (rows) x obs (cols): >0 iff pred is downstream of obs
+upstream_dist_nm <- a_nm
+upstream_dist_nm[!(a_nm > 0 & b_nm == 0)] <- NA   # keep ONLY true upstream, flow-connected pairs- drops flow-unconnected pairs (both >0)
+nearest_row_up_nm  <- apply(upstream_dist_nm, 2, function(col) if (all(is.na(col))) NA_integer_ else which.min(col))
+nearest_dist_up_nm <- apply(upstream_dist_nm, 2, function(col) if (all(is.na(col))) NA_real_    else min(col, na.rm = TRUE))
+site_match_nm_upstream <- tibble(
+  Site               = site_lookup_nm[colnames(upstream_dist_nm)],
+  nearest_predID     = ifelse(is.na(nearest_row_up_nm), NA_character_,
+                              pred_lookup_nm[rownames(upstream_dist_nm)[nearest_row_up_nm]]),
+  network_distance_m = nearest_dist_up_nm
+)
+sum(is.na(site_match_nm_upstream$nearest_predID))
+## nm - temporal match
+campaign_doy_nm <- clean_nm %>% group_by(CampaignID) %>% summarize(DOY = mean(DOY), .groups = "drop")
+synth_doy_nm    <- extended_nm %>% distinct(CampaignNum, DOY)
+# circular DOY distance, synthetic months (rows) x real campaigns (cols)
+doy_dist_nm <- outer(synth_doy_nm$DOY, campaign_doy_nm$DOY, FUN = circ_dist)
+rownames(doy_dist_nm) <- synth_doy_nm$CampaignNum
+colnames(doy_dist_nm) <- campaign_doy_nm$CampaignID
+tie_tol_days     <- 1
+campaign_nums_nm <- as.integer(rownames(doy_dist_nm))
+pick_nearest_campaign <- function(col, campaign_nums, tol) {
+  best_gap       <- min(col)
+  idx_candidates <- which(col <= best_gap + tol)                         # all near-tied rows
+  winner         <- idx_candidates[which.min(campaign_nums[idx_candidates])]  # smallest CampaignNum among them
+  unname(c(campaign_nums[winner], col[winner]))   # strip names -- col[winner] otherwise carries its
+  # own rowname and c() would glue it onto ours
+}
+picked_nm <- apply(doy_dist_nm, 2, pick_nearest_campaign, campaign_nums = campaign_nums_nm, tol = tie_tol_days)
+rownames(picked_nm) <- c("CampaignNum", "day_gap")  # name the rows ourselves now that they're unambiguous
+campaign_match_nm <- tibble(
+  CampaignID          = colnames(doy_dist_nm),
+  nearest_CampaignNum = as.integer(picked_nm["CampaignNum", ]),
+  day_gap             = picked_nm["day_gap", ]
+)
+## nm - build the comparison and summarize
+unmatched_sites_nm <- site_match_nm_upstream %>% filter(is.na(nearest_predID)) %>% pull(Site)
+if (length(unmatched_sites_nm) > 0) {
+  cat("NM: dropping", length(unmatched_sites_nm), "site(s) with no flow-connected predpt upstream:",
+      paste(unmatched_sites_nm, collapse = ", "), "\n")
+}
+comparison_nm <- clean_nm %>%
+  select(Site, CampaignID, DOY, all_of(constituents)) %>%
+  pivot_longer(all_of(constituents), names_to = "Constituent", values_to = "Conc_real") %>%
+  filter(!is.na(Conc_real)) %>%
+  inner_join(site_match_nm_upstream %>% filter(!is.na(nearest_predID)), by = "Site") %>%
+  inner_join(campaign_match_nm, by = "CampaignID") %>%
+  inner_join(extended_nm %>% select(predID, CampaignNum, Constituent, Conc_synth = Conc),
+             by = c("nearest_predID" = "predID", "nearest_CampaignNum" = "CampaignNum", "Constituent")) %>%
+  mutate(Diff = (Conc_real) - (Conc_synth),
+         Ratio    = Conc_real / Conc_synth,
+         Pct_Diff = (Conc_real - Conc_synth) / Conc_synth * 100)
+comparison_summary_nm <- comparison_nm %>%
+  group_by(Constituent) %>%
+  summarize(n                       = n(),
+            Mean_Diff           = mean(Diff),
+            SD_Diff             = sd(Diff),
+            Median_Pct_Diff         = median(Pct_Diff),
+            Mean_network_distance_m = mean(network_distance_m),
+            Max_network_distance_m  = max(network_distance_m),
+            Mean_day_gap            = mean(day_gap),
+            Max_day_gap             = max(day_gap),
+            .groups = "drop")
+print(comparison_summary_nm)
+print(comparison_nm %>% filter(Constituent == "NPOC..mg.C.L.") %>% select(CampaignID, Site, nearest_predID, Conc_real, Conc_synth, Diff), n=50)
+print(comparison_nm %>% filter(Constituent == "TDN..mg.N.L.") %>% select(CampaignID, Site, nearest_predID, Conc_real, Conc_synth, Diff), n=50)
+# Visual check: real vs. synthetic concentration, one point per site/campaign
+ggplot(comparison_nm, aes(x = Conc_real, y = Conc_synth, color = factor(CampaignID))) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey40") +
+  #scale_x_log10() +
+  #scale_y_log10() +
+  facet_wrap(~ Constituent, scales = "free") +
+  labs(x = "Real concentration", y = "Synthetic concentration",
+       color = "Campaign", title = "NM: real vs. synthetic concentration by site") +
+  theme_bw()
+
+
+## nm - pull the matched real values keyed to the synthetic cells they replace
+real_values_for_extended_nm <- comparison_nm %>%
+  select(predID = nearest_predID, CampaignNum = nearest_CampaignNum, Constituent,
+         Conc_real, Site, CampaignID)
+
+## nm - check for collisions: >1 real site/campaign landing on the same synthetic cell
+collisions_nm <- real_values_for_extended_nm %>%
+  count(predID, CampaignNum, Constituent) %>%
+  filter(n > 1)
+
+if (nrow(collisions_nm) > 0) {
+  cat("NM:", nrow(collisions_nm), "synthetic cell(s) matched by more than one real site/campaign -- averaging:\n")
+  print(
+    real_values_for_extended_nm %>%
+      semi_join(collisions_nm, by = c("predID", "CampaignNum", "Constituent")) %>%
+      arrange(predID, CampaignNum, Constituent)
+  )
+}
+
+real_values_for_extended_nm_avg <- real_values_for_extended_nm %>%
+  group_by(predID, CampaignNum, Constituent) %>%
+  summarize(Conc_real = mean(Conc_real), n_real_obs = n(), .groups = "drop")
+
+## nm - substitute into extended_nm and flag which rows are real
+extended_nm_with_real <- extended_nm %>%
+  left_join(real_values_for_extended_nm_avg, by = c("predID", "CampaignNum", "Constituent")) %>%
+  mutate(
+    Source = ifelse(!is.na(Conc_real), "real", "synth"),
+    Conc   = ifelse(!is.na(Conc_real), Conc_real, Conc)
+  ) %>%
+  select(-Conc_real, -n_real_obs)
+
+## nm - checks
+count(extended_nm_with_real, Source)
+extended_nm_with_real %>% filter(Source == "real") %>% count(CampaignNum)   # should only show 7, 8, 9
+nrow(real_values_for_extended_nm_avg) * 1 == sum(extended_nm_with_real$Source == "real")  # TRUE if no further collisions snuck through
+
+## nm - plot
+summary_nm <- extended_nm_with_real %>%
+  group_by(Constituent, CampaignNum, Day) %>%
+  summarize(Mean_Conc = mean(Conc), P25_Conc = quantile(Conc, 0.25),
+            P75_Conc = quantile(Conc, 0.75), .groups = "drop")
+
+real_points_nm <- extended_nm_with_real %>% filter(Source == "real")
+
+p_combo_check <- ggplot(summary_nm, aes(x = Day / 365.25, y = Mean_Conc)) +
+  geom_ribbon(aes(ymin = P25_Conc, ymax = P75_Conc), fill = "grey70", alpha = 0.5) +
+  geom_line(color = "grey30") +
+  geom_point(aes(color = "Monthly mean (all predpts)"), size = 1) +
+  geom_point(
+    data = real_points_nm,
+    aes(x = Day / 365.25, y = Conc, color = "Real observation"),
+    size = 2.2, shape = 17
+  ) +
+  scale_color_manual(values = c("Monthly mean (all predpts)" = "grey30",
+                                "Real observation" = "#2a78d6")) +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 1) +
+  labs(x = "Synthetic year", y = "Concentration (mean across predpts, that month)",
+       title = "Real + extended dataset", color = NULL) +
+  theme_bw()
+
+p_combo_check
+
+ggsave(file.path(plot_dir, "Synthetic_with_real_mean_by_month.png"), p_combo_check, width = 8, height = 6, dpi = 150)
+
+## nm - save
+write_csv(extended_nm_with_real, file.path(data_out_dir, "nm_synthetic_with_real.csv"))
+
+
+
+
 ###############################################################################
 ###################################### BR #####################################
 ###############################################################################
@@ -1034,3 +1210,174 @@ p_synth_check <- synthetic_extended %>%
 ggsave(file.path(plot_dir, "Synthetic_extended_mean_by_month_br.png"), p_synth_check, width = 8, height = 6, dpi = 150)
 
 
+
+#### PART F -- Match synthetic data to real data ####
+
+### First, compare the real and synthetic data equivalent in time and space. 
+
+circ_dist <- function(a, b) pmin(abs(a - b), 365.25 - abs(a - b))  # shared helper, not catchment-specific
+
+## br - read in saved data
+ssn_object_br <- readRDS("data/ssn_objects_br.rds")$br
+clean_br = read.csv(file.path(data_out_dir, "br_clean.csv"))
+extended_br = read_csv(file.path(data_out_dir, "br_synthetic_extended.csv"), show_col_types = FALSE)
+extended_br$Catchment = "br"
+
+## br - spatial match
+dist_list_br  <- ssn_get_stream_distmat(ssn_object_br, name = "predpts")
+# total routed distance, predpts (rows) x obs (cols):
+total_dist_br <- t(dist_list_br$dist.net1.a) + dist_list_br$dist.net1.b
+# pid <-> Site/predID lookups
+obs_geom_br  <- ssn_get_netgeom(ssn_object_br$obs, reformat = TRUE)
+obs_geom_br$Site <- ssn_object_br$obs$Site
+pred_geom_br <- ssn_get_netgeom(ssn_object_br$preds$predpts, reformat = TRUE)
+pred_geom_br$predID <- ssn_object_br$preds$predpts$predID
+site_lookup_br <- setNames(obs_geom_br$Site, as.character(obs_geom_br$pid))     # pid -> Site
+pred_lookup_br <- setNames(pred_geom_br$predID, as.character(pred_geom_br$pid)) # pid -> predID
+# nearest predpt per real site
+a_br <- t(dist_list_br$dist.net1.a)   # pred (rows) x obs (cols): >0 iff pred is upstream of obs
+b_br <- dist_list_br$dist.net1.b      # pred (rows) x obs (cols): >0 iff pred is downstream of obs
+upstream_dist_br <- a_br
+upstream_dist_br[!(a_br > 0 & b_br == 0)] <- NA   # keep ONLY true upstream, flow-connected pairs- drops flow-unconnected pairs (both >0)
+nearest_row_up_br  <- apply(upstream_dist_br, 2, function(col) if (all(is.na(col))) NA_integer_ else which.min(col))
+nearest_dist_up_br <- apply(upstream_dist_br, 2, function(col) if (all(is.na(col))) NA_real_    else min(col, na.rm = TRUE))
+site_match_br_upstream <- tibble(
+  Site               = site_lookup_br[colnames(upstream_dist_br)],
+  nearest_predID     = ifelse(is.na(nearest_row_up_br), NA_character_,
+                              pred_lookup_br[rownames(upstream_dist_br)[nearest_row_up_br]]),
+  network_distance_m = nearest_dist_up_br
+)
+sum(is.na(site_match_br_upstream$nearest_predID))
+## br - temporal match
+campaign_doy_br <- clean_br %>% group_by(CampaignID) %>% summarize(DOY = mean(DOY), .groups = "drop")
+synth_doy_br    <- extended_br %>% distinct(CampaignNum, DOY)
+# circular DOY distance, synthetic months (rows) x real campaigns (cols)
+doy_dist_br <- outer(synth_doy_br$DOY, campaign_doy_br$DOY, FUN = circ_dist)
+rownames(doy_dist_br) <- synth_doy_br$CampaignNum
+colnames(doy_dist_br) <- campaign_doy_br$CampaignID
+tie_tol_days     <- 1
+campaign_nums_br <- as.integer(rownames(doy_dist_br))
+pick_nearest_campaign <- function(col, campaign_nums, tol) {
+  best_gap       <- min(col)
+  idx_candidates <- which(col <= best_gap + tol)                         # all near-tied rows
+  winner         <- idx_candidates[which.min(campaign_nums[idx_candidates])]  # smallest CampaignNum among them
+  unname(c(campaign_nums[winner], col[winner]))   # strip names -- col[winner] otherwise carries its
+  # own rowname and c() would glue it onto ours
+}
+picked_br <- apply(doy_dist_br, 2, pick_nearest_campaign, campaign_nums = campaign_nums_br, tol = tie_tol_days)
+rownames(picked_br) <- c("CampaignNum", "day_gap")  # name the rows ourselves now that they're unambiguous
+campaign_match_br <- tibble(
+  CampaignID          = colnames(doy_dist_br),
+  nearest_CampaignNum = as.integer(picked_br["CampaignNum", ]),
+  day_gap             = picked_br["day_gap", ]
+)
+## br - build the comparison and summarize
+ubratched_sites_br <- site_match_br_upstream %>% filter(is.na(nearest_predID)) %>% pull(Site)
+if (length(ubratched_sites_br) > 0) {
+  cat("br: dropping", length(ubratched_sites_br), "site(s) with no flow-connected predpt upstream:",
+      paste(ubratched_sites_br, collapse = ", "), "\n")
+}
+comparison_br <- clean_br %>%
+  select(Site, CampaignID, DOY, all_of(constituents)) %>%
+  pivot_longer(all_of(constituents), names_to = "Constituent", values_to = "Conc_real") %>%
+  filter(!is.na(Conc_real)) %>%
+  inner_join(site_match_br_upstream %>% filter(!is.na(nearest_predID)), by = "Site") %>%
+  inner_join(campaign_match_br, by = "CampaignID") %>%
+  inner_join(extended_br %>% select(predID, CampaignNum, Constituent, Conc_synth = Conc),
+             by = c("nearest_predID" = "predID", "nearest_CampaignNum" = "CampaignNum", "Constituent")) %>%
+  mutate(Diff = (Conc_real) - (Conc_synth),
+         Ratio    = Conc_real / Conc_synth,
+         Pct_Diff = (Conc_real - Conc_synth) / Conc_synth * 100)
+comparison_summary_br <- comparison_br %>%
+  group_by(Constituent) %>%
+  summarize(n                       = n(),
+            Mean_Diff           = mean(Diff),
+            SD_Diff             = sd(Diff),
+            Median_Pct_Diff         = median(Pct_Diff),
+            Mean_network_distance_m = mean(network_distance_m),
+            Max_network_distance_m  = max(network_distance_m),
+            Mean_day_gap            = mean(day_gap),
+            Max_day_gap             = max(day_gap),
+            .groups = "drop")
+print(comparison_summary_br)
+print(comparison_br %>% filter(Constituent == "NPOC..mg.C.L.") %>% select(CampaignID, Site, nearest_predID, Conc_real, Conc_synth, Diff), n=50)
+print(comparison_br %>% filter(Constituent == "TDN..mg.N.L.") %>% select(CampaignID, Site, nearest_predID, Conc_real, Conc_synth, Diff), n=50)
+# Visual check: real vs. synthetic concentration, one point per site/campaign
+ggplot(comparison_br, aes(x = Conc_real, y = Conc_synth, color = factor(CampaignID))) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey40") +
+  #scale_x_log10() +
+  #scale_y_log10() +
+  facet_wrap(~ Constituent, scales = "free") +
+  labs(x = "Real concentration", y = "Synthetic concentration",
+       color = "Campaign", title = "br: real vs. synthetic concentration by site") +
+  theme_bw()
+
+
+## br - pull the matched real values keyed to the synthetic cells they replace
+real_values_for_extended_br <- comparison_br %>%
+  select(predID = nearest_predID, CampaignNum = nearest_CampaignNum, Constituent,
+         Conc_real, Site, CampaignID)
+
+## br - check for collisions: >1 real site/campaign landing on the same synthetic cell
+collisions_br <- real_values_for_extended_br %>%
+  count(predID, CampaignNum, Constituent) %>%
+  filter(n > 1)
+
+if (nrow(collisions_br) > 0) {
+  cat("br:", nrow(collisions_br), "synthetic cell(s) matched by more than one real site/campaign -- averaging:\n")
+  print(
+    real_values_for_extended_br %>%
+      semi_join(collisions_br, by = c("predID", "CampaignNum", "Constituent")) %>%
+      arrange(predID, CampaignNum, Constituent)
+  )
+}
+
+real_values_for_extended_br_avg <- real_values_for_extended_br %>%
+  group_by(predID, CampaignNum, Constituent) %>%
+  summarize(Conc_real = mean(Conc_real), n_real_obs = n(), .groups = "drop")
+
+## br - substitute into extended_br and flag which rows are real
+extended_br_with_real <- extended_br %>%
+  left_join(real_values_for_extended_br_avg, by = c("predID", "CampaignNum", "Constituent")) %>%
+  mutate(
+    Source = ifelse(!is.na(Conc_real), "real", "synth"),
+    Conc   = ifelse(!is.na(Conc_real), Conc_real, Conc)
+  ) %>%
+  select(-Conc_real, -n_real_obs)
+
+## br - checks
+count(extended_br_with_real, Source)
+extended_br_with_real %>% filter(Source == "real") %>% count(CampaignNum)   # should only show 7, 8, 9
+nrow(real_values_for_extended_br_avg) * 1 == sum(extended_br_with_real$Source == "real")  # TRUE if no further collisions snuck through
+
+## br - plot
+summary_br <- extended_br_with_real %>%
+  group_by(Constituent, CampaignNum, Day) %>%
+  summarize(Mean_Conc = mean(Conc), P25_Conc = quantile(Conc, 0.25),
+            P75_Conc = quantile(Conc, 0.75), .groups = "drop")
+
+real_points_br <- extended_br_with_real %>% filter(Source == "real")
+
+p_combo_check <- ggplot(summary_br, aes(x = Day / 365.25, y = Mean_Conc)) +
+  geom_ribbon(aes(ymin = P25_Conc, ymax = P75_Conc), fill = "grey70", alpha = 0.5) +
+  geom_line(color = "grey30") +
+  geom_point(aes(color = "Monthly mean (all predpts)"), size = 1) +
+  geom_point(
+    data = real_points_br,
+    aes(x = Day / 365.25, y = Conc, color = "Real observation"),
+    size = 2.2, shape = 17
+  ) +
+  scale_color_manual(values = c("Monthly mean (all predpts)" = "grey30",
+                                "Real observation" = "#2a78d6")) +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 1) +
+  labs(x = "Synthetic year", y = "Concentration (mean across predpts, that month)",
+       title = "Real + extended dataset", color = NULL) +
+  theme_bw()
+
+p_combo_check
+
+ggsave(file.path(plot_dir, "Synthetic_with_real_mean_by_month_br.png"), p_combo_check, width = 8, height = 6, dpi = 150)
+
+## br - save
+write_csv(extended_br_with_real, file.path(data_out_dir, "br_synthetic_with_real.csv"))
