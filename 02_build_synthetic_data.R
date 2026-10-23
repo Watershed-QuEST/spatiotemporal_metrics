@@ -139,7 +139,7 @@ for (cc in constituents) {
     resp <- paste(cc, camp, sep = "__")
     if (!resp %in% names(ssn_object$obs)) next
     if (sum(!is.na(ssn_object$obs[[resp]])) < 2) next  # Torgegram needs >= 2 non-NA sites
-
+    
     form <- as.formula(paste0("log(`", resp, "`) ~ logArea"))
     tg <- tryCatch(
       Torgegram(formula = form, ssn.object = ssn_object, type = c("flowcon", "flowuncon", "euclid")),
@@ -169,29 +169,29 @@ covariance_specs <- list(
 drop_na_response <- function(ssn.object, resp, label) {
   n_na <- sum(is.na(ssn.object$obs[[resp]]))
   if (n_na == 0) return(ssn.object)
-
+  
   ssn.object <- ssn_update_path(ssn.object, normalizePath(ssn.object$path, mustWork = FALSE))
-
+  
   ## Scratch object, written to tempdir() (not the Dropbox-synced project
   ## folder) -- disposable input to ssn_lm(), not a deliverable.
   sub_path <- file.path(tempdir(), paste0(
     tools::file_path_sans_ext(basename(ssn_path)), "_", make.names(label), "_sub.ssn"
   ))
   subset_expr <- bquote(!is.na(.(as.symbol(resp))))
-
+  
   sub_ssn <- tryCatch(
     do.call(ssn_subset, list(ssn = ssn.object, path = sub_path,
-                              subset = subset_expr, clip = FALSE, overwrite = TRUE)),
+                             subset = subset_expr, clip = FALSE, overwrite = TRUE)),
     error = function(e) { message(resp, ": ssn_subset failed: ", e$message); NULL }
   )
   if (is.null(sub_ssn)) return(NULL)
-
+  
   ok <- tryCatch({
     ssn_create_distmat(sub_ssn, predpts = "predpts", among_predpts = TRUE, overwrite = TRUE)
     TRUE
   }, error = function(e) { message(resp, ": ssn_create_distmat on subset failed: ", e$message); FALSE })
   if (!ok) return(NULL)
-
+  
   cat("  ", resp, "-- dropped", n_na, "NA-response site(s) before fitting\n")
   sub_ssn
 }
@@ -205,43 +205,43 @@ varcomp_rows <- list()
 for (cc in constituents) {
   camp_cols <- intersect(paste(cc, camps, sep = "__"), names(ssn_object$obs))
   if (length(camp_cols) == 0) next
-
+  
   resp_avg <- paste(cc, "avg", sep = "__")
   obs_vals <- st_drop_geometry(ssn_object$obs)[, camp_cols, drop = FALSE]
   avg_vals <- rowMeans(as.matrix(obs_vals), na.rm = TRUE)
   avg_vals[is.nan(avg_vals)] <- NA
   ssn_object$obs[[resp_avg]] <- avg_vals
-
+  
   fit_ssn <- drop_na_response(ssn_object, resp_avg, resp_avg)
   if (is.null(fit_ssn)) next
-
+  
   form <- as.formula(paste0("log(`", resp_avg, "`) ~ logArea"))
-
+  
   for (model_name in names(covariance_specs)) {
     spec <- covariance_specs[[model_name]]
-
+    
     ## do.call() (not a direct ssn_lm(...) call) is deliberate
     fit <- tryCatch(
       do.call(ssn_lm, c(list(formula = form, ssn.object = fit_ssn, additive = ssn_additive_col), spec)),
       error = function(e) { message(resp_avg, " [", model_name, "] failed: ", e$message); NULL }
     )
     if (is.null(fit)) next
-
+    
     key <- paste(resp_avg, model_name, sep = "__")
     all_fits[[key]] <- fit
     ## Site IDs in the exact row order ssn_lm() saw them -- needed in Part C to attach loocv()'s per-row predictions back to a real Site.
     all_site_ids[[key]] <- st_drop_geometry(fit_ssn$obs)[[ssn_site_id_col]]
-
+    
     ## This adds in leave-one-out cross-validation (LOOCV), in addition to AICc. LOOCV's provides a direct check of whether the extra covariance flexibility actually buys better predictions, not just a parsimony evaluation. 
     cv <- tryCatch(loocv(fit), error = function(e) {
       message(resp_avg, " [", model_name, "] loocv failed: ", e$message); NULL
     })
-
+    
     vc <- varcomp(fit) %>%
       mutate(Constituent = cc, Model = model_name, AICc = AICc(fit), Key = key, .before = 1)
     if (!is.null(cv)) vc <- bind_cols(vc, cv[rep(1, nrow(vc)), , drop = FALSE])
     varcomp_rows[[key]] <- vc
-
+    
     cat(sprintf("  %-30s %-13s AICc=%7.2f", resp_avg, model_name, AICc(fit)),
         if (!is.null(cv)) sprintf("  RMSPE=%.3f cor2=%.3f cover.95=%.2f", cv$RMSPE, cv$cor2, cv$cover.95)
         else "  (loocv failed)", "\n")
@@ -260,20 +260,20 @@ saveRDS(all_fits, file.path(data_out_dir, "SSN_fitted_models.rds"))
 #   3. Among what's left, lowest RMSPE (tie-break: highest cor2) wins, UNLESS it's within rmspe_tie_tol of another spec. User must break a real tie using the covariance_choice_overrides tibble below.
 # Note: Thresholds below are judgment calls -- loosen/tighten here if clearly too strict/permissive.
 select_best_covariance_fit <- function(varcomp_summary,
-                                        aicc_window = 2,
-                                        min_cover95 = 0.70,
-                                        std_mspe_bounds = c(0.3, 3),
-                                        rmspe_tie_tol = 0.02,
-                                        overrides = NULL) {
+                                       aicc_window = 2,
+                                       min_cover95 = 0.70,
+                                       std_mspe_bounds = c(0.3, 3),
+                                       rmspe_tie_tol = 0.02,
+                                       overrides = NULL) {
   if (is.null(overrides)) overrides <- tibble(Constituent = character(), Model = character())
-
+  
   by_fit <- varcomp_summary %>%
     distinct(Constituent, Model, Key, AICc, bias, std.bias, MSPE, RMSPE,
              std.MSPE, RAV, cor2, cover.80, cover.90, cover.95)
-
+  
   none_ref <- by_fit %>% filter(Model == "none") %>%
     group_by(Constituent) %>% summarize(none_aicc = min(AICc), .groups = "drop")
-
+  
   by_fit %>%
     filter(Model != "none") %>%
     left_join(none_ref, by = "Constituent") %>%
@@ -281,7 +281,7 @@ select_best_covariance_fit <- function(varcomp_summary,
     group_modify(function(df, key) {
       none_aicc <- df$none_aicc[1]
       manual <- overrides %>% filter(Constituent == key$Constituent)
-
+      
       ## A manual override wins
       if (nrow(manual) == 1) {
         if (manual$Model[1] == "none") {
@@ -304,7 +304,7 @@ select_best_covariance_fit <- function(varcomp_summary,
               "' but no such fit was found for this constituent -- ignoring it.\n", sep = "")
         }
       }
-
+      
       best_aicc <- min(df$AICc)
       if (is.na(none_aicc) || best_aicc > none_aicc - aicc_window) {
         cat("  ", key$Constituent, "-- no spatial structure beats 'none' by >=", aicc_window,
@@ -313,19 +313,19 @@ select_best_covariance_fit <- function(varcomp_summary,
             "covariance_choice_overrides to run it through anyway. Skipping for now.\n")
         return(df[0, ])
       }
-
+      
       calibrated <- df %>% filter(std.MSPE >= std_mspe_bounds[1], std.MSPE <= std_mspe_bounds[2],
-                                   cover.95 >= min_cover95)
+                                  cover.95 >= min_cover95)
       pool <- if (nrow(calibrated) > 0) calibrated else df
       if (nrow(calibrated) == 0) {
         cat("  ", key$Constituent, "-- no spec passed the calibration check -- falling back to",
             "best-RMSPE anyway; check its LOOCV numbers before trusting it.\n")
       }
-
+      
       pool <- pool %>% arrange(RMSPE, desc(cor2))
       tied <- pool %>% filter(RMSPE <= pool$RMSPE[1] * (1 + rmspe_tie_tol))
       if (nrow(tied) == 1) return(tied)
-
+      
       cat("\n  ", key$Constituent, "-- TIE:", nrow(tied), "spec(s) within",
           paste0(round(rmspe_tie_tol * 100), "%"), "RMSPE of each other -- not auto-resolving:\n")
       print(tied %>% select(Model, AICc, RMSPE, cor2, std.MSPE, cover.95))
@@ -360,10 +360,10 @@ seasonal_models <- list()
 for (cc in constituents) {
   sub <- clean[!is.na(clean[[cc]]) & clean[[cc]] > 0, ]
   fit_df <- data.frame(y = log(sub[[cc]]), logArea = sub$logArea,
-                        sin_doy = sin(2 * pi * sub$DOY / 365), cos_doy = cos(2 * pi * sub$DOY / 365))
+                       sin_doy = sin(2 * pi * sub$DOY / 365), cos_doy = cos(2 * pi * sub$DOY / 365))
   fit <- lm(y ~ logArea + sin_doy + cos_doy, data = fit_df)
   seasonal_models[[cc]] <- list(fit = fit, beta = unname(coef(fit)), sigma = summary(fit)$sigma,
-                                 area_rng = range(sub$logArea), doy_rng = range(sub$DOY), obs = sub)
+                                area_rng = range(sub$logArea), doy_rng = range(sub$DOY), obs = sub)
 }
 
 # Fitted area+seasonal model coefficients (Intercept, logArea, sin, cos) and sigma (e):
@@ -390,10 +390,10 @@ for (cc in constituents) {
          subtitle = "Line + band = fitted mean and 95% CI at seasonally-neutral DOY; points = observed") +
     theme_bw()
   ggsave(file.path(plot_dir, paste0("Fit_check_area_", cc, ".png")), p, width = 8, height = 6, dpi = 150)
-
+  
   doy_seq <- seq(m$doy_rng[1], m$doy_rng[2], length.out = 100)
   season_curve <- data.frame(logArea = mean(m$obs$logArea), sin_doy = sin(2 * pi * doy_seq / 365),
-                              cos_doy = cos(2 * pi * doy_seq / 365), DOY = doy_seq) %>%
+                             cos_doy = cos(2 * pi * doy_seq / 365), DOY = doy_seq) %>%
     mutate(pred = predict(m$fit, newdata = ., se.fit = TRUE)$fit,
            se = predict(m$fit, newdata = ., se.fit = TRUE)$se.fit,
            Conc = exp(pred), Conc_lo = exp(pred - 1.96 * se), Conc_hi = exp(pred + 1.96 * se))
@@ -417,23 +417,23 @@ resid_lag1_pairs <- pmap_dfr(
     fit <- all_fits[[key]]
     site_ids <- all_site_ids[[key]]
     if (is.null(fit) || is.null(site_ids)) return(tibble())
-
+    
     cv <- tryCatch(loocv(fit, cv_predict = TRUE), error = function(e) {
       cat("  ", cc, ": loocv(cv_predict = TRUE) failed --", e$message, "\n"); NULL
     })
     if (is.null(cv) || is.null(cv$cv_predict)) return(tibble())
     mu_site_loocv <- setNames(cv$cv_predict, site_ids)
-
+    
     beta <- seasonal_models[[cc]]$beta
     ref_doy <- mean(clean$DOY, na.rm = TRUE)
-
+    
     obs <- seasonal_models[[cc]]$obs
     obs$mu_loocv <- mu_site_loocv[obs$Site]
     obs <- obs[!is.na(obs$mu_loocv), ]  
     if (nrow(obs) == 0) return(tibble())
-
+    
     obs$Residual <- log(obs[[cc]]) - obs$mu_loocv - seasonal_shift(obs$DOY, beta, ref_doy)
-
+    
     obs %>%
       arrange(Site, Date) %>%
       group_by(Site) %>%
@@ -449,13 +449,13 @@ if (nrow(resid_lag1_pairs) >= 4) {
   resid_autocorr_summary <- resid_lag1_pairs %>%
     group_by(Constituent) %>%
     summarize(n_pairs = n(), lag1_cor = cor(Residual, Residual_prev), .groups = "drop")
-
+  
   cat("  Pooled lag-1 (consecutive-campaign, same-site) residual correlation:\n")
   print(resid_autocorr_summary)
-
+  
   write_csv(resid_lag1_pairs, file.path(data_out_dir, "Residual_lag1_pairs.csv"))
   write_csv(resid_autocorr_summary, file.path(data_out_dir, "Residual_lag1_summary.csv"))
-
+  
   p_resid <- ggplot(resid_lag1_pairs, aes(x = Residual_prev, y = Residual)) +
     geom_point(alpha = 0.6) +
     geom_smooth(method = "lm", se = TRUE, color = "black") +
@@ -485,19 +485,19 @@ for (i in seq_len(nrow(best_fits))) {
   key <- best_fits$key[i]
   fit <- all_fits[[key]]
   if (is.null(fit)) next
-
+  
   setup <- build_field_setup(fit)
-
+  
   rho <- temporal_rho_overrides[[cc]]
   if (is.null(rho)) {
     est <- resid_autocorr_summary$lag1_cor[resid_autocorr_summary$Constituent == cc]
     ## draw_field()'s exponential-decay temporal covariance can only represent rho between 0 and 1, never negative correlation; rho = 0 (white noise in time).
     rho <- if (length(est) == 1 && !is.na(est)) max(0, min(0.9, est)) else 0
   }
-
+  
   field_setups[[cc]] <- list(setup = setup, beta = seasonal_models[[cc]]$beta,
-                              ref_doy = mean(clean$DOY, na.rm = TRUE), temporal_rho = rho,
-                              model = best_fits$Model[i])
+                             ref_doy = mean(clean$DOY, na.rm = TRUE), temporal_rho = rho,
+                             model = best_fits$Model[i])
   cat("  ", cc, "-- field setup saved (m =", setup$m, "predpts, model =", best_fits$Model[i],
       ", temporal_rho =", round(rho, 3), ")\n")
 }
@@ -515,9 +515,9 @@ for (cc in names(field_setups)) {
   fs <- field_setups[[cc]]
   noise <- draw_field(fs$setup, t_days, rho = fs$temporal_rho, time_unit_days = time_unit_days)
   shift_mat <- matrix(seasonal_shift(doy_seq, fs$beta, fs$ref_doy),
-                       nrow = fs$setup$m, ncol = n_synthetic_months, byrow = TRUE)
+                      nrow = fs$setup$m, ncol = n_synthetic_months, byrow = TRUE)
   field <- exp(fs$setup$mu_cond + shift_mat + noise)
-
+  
   colnames(field) <- paste0("SynthCamp", seq_len(n_synthetic_months))
   synthetic_rows[[cc]] <- as_tibble(field) %>%
     mutate(Constituent = cc, predID = paste0("P", seq_len(fs$setup$m)), .before = 1) %>%
@@ -1314,57 +1314,57 @@ ggplot(comparison_br, aes(x = Conc_real, y = Conc_synth, color = factor(Campaign
   theme_bw()
 
 
-## br - pull the matched real values keyed to the synthetic cells they replace
-real_values_for_extended_br <- comparison_br %>%
+## nm - pull the matched real values keyed to the synthetic cells they replace
+real_values_for_extended_nm <- comparison_nm %>%
   select(predID = nearest_predID, CampaignNum = nearest_CampaignNum, Constituent,
          Conc_real, Site, CampaignID)
 
-## br - check for collisions: >1 real site/campaign landing on the same synthetic cell
-collisions_br <- real_values_for_extended_br %>%
+## nm - check for collisions: >1 real site/campaign landing on the same synthetic cell
+collisions_nm <- real_values_for_extended_nm %>%
   count(predID, CampaignNum, Constituent) %>%
   filter(n > 1)
 
-if (nrow(collisions_br) > 0) {
-  cat("br:", nrow(collisions_br), "synthetic cell(s) matched by more than one real site/campaign -- averaging:\n")
+if (nrow(collisions_nm) > 0) {
+  cat("NM:", nrow(collisions_nm), "synthetic cell(s) matched by more than one real site/campaign -- averaging:\n")
   print(
-    real_values_for_extended_br %>%
-      semi_join(collisions_br, by = c("predID", "CampaignNum", "Constituent")) %>%
+    real_values_for_extended_nm %>%
+      semi_join(collisions_nm, by = c("predID", "CampaignNum", "Constituent")) %>%
       arrange(predID, CampaignNum, Constituent)
   )
 }
 
-real_values_for_extended_br_avg <- real_values_for_extended_br %>%
+real_values_for_extended_nm_avg <- real_values_for_extended_nm %>%
   group_by(predID, CampaignNum, Constituent) %>%
   summarize(Conc_real = mean(Conc_real), n_real_obs = n(), .groups = "drop")
 
-## br - substitute into extended_br and flag which rows are real
-extended_br_with_real <- extended_br %>%
-  left_join(real_values_for_extended_br_avg, by = c("predID", "CampaignNum", "Constituent")) %>%
+## nm - substitute into extended_nm and flag which rows are real
+extended_nm_with_real <- extended_nm %>%
+  left_join(real_values_for_extended_nm_avg, by = c("predID", "CampaignNum", "Constituent")) %>%
   mutate(
     Source = ifelse(!is.na(Conc_real), "real", "synth"),
     Conc   = ifelse(!is.na(Conc_real), Conc_real, Conc)
   ) %>%
   select(-Conc_real, -n_real_obs)
 
-## br - checks
-count(extended_br_with_real, Source)
-extended_br_with_real %>% filter(Source == "real") %>% count(CampaignNum)   # should only show 7, 8, 9
-nrow(real_values_for_extended_br_avg) * 1 == sum(extended_br_with_real$Source == "real")  # TRUE if no further collisions snuck through
+## nm - checks
+count(extended_nm_with_real, Source)
+extended_nm_with_real %>% filter(Source == "real") %>% count(CampaignNum)   # should only show 7, 8, 9
+nrow(real_values_for_extended_nm_avg) * 1 == sum(extended_nm_with_real$Source == "real")  # TRUE if no further collisions snuck through
 
-## br - plot
-summary_br <- extended_br_with_real %>%
+## nm - plot
+summary_nm <- extended_nm_with_real %>%
   group_by(Constituent, CampaignNum, Day) %>%
   summarize(Mean_Conc = mean(Conc), P25_Conc = quantile(Conc, 0.25),
             P75_Conc = quantile(Conc, 0.75), .groups = "drop")
 
-real_points_br <- extended_br_with_real %>% filter(Source == "real")
+real_points_nm <- extended_nm_with_real %>% filter(Source == "real")
 
-p_combo_check <- ggplot(summary_br, aes(x = Day / 365.25, y = Mean_Conc)) +
+p_combo_check <- ggplot(summary_nm, aes(x = Day / 365.25, y = Mean_Conc)) +
   geom_ribbon(aes(ymin = P25_Conc, ymax = P75_Conc), fill = "grey70", alpha = 0.5) +
   geom_line(color = "grey30") +
   geom_point(aes(color = "Monthly mean (all predpts)"), size = 1) +
   geom_point(
-    data = real_points_br,
+    data = real_points_nm,
     aes(x = Day / 365.25, y = Conc, color = "Real observation"),
     size = 2.2, shape = 17
   ) +
@@ -1377,7 +1377,7 @@ p_combo_check <- ggplot(summary_br, aes(x = Day / 365.25, y = Mean_Conc)) +
 
 p_combo_check
 
-ggsave(file.path(plot_dir, "Synthetic_with_real_mean_by_month_br.png"), p_combo_check, width = 8, height = 6, dpi = 150)
+ggsave(file.path(plot_dir, "Synthetic_with_real_mean_by_month.png"), p_combo_check, width = 8, height = 6, dpi = 150)
 
-## br - save
-write_csv(extended_br_with_real, file.path(data_out_dir, "br_synthetic_with_real.csv"))
+## nm - save
+write_csv(extended_nm_with_real, file.path(data_out_dir, "nm_synthetic_with_real.csv"))
