@@ -1314,57 +1314,57 @@ ggplot(comparison_br, aes(x = Conc_real, y = Conc_synth, color = factor(Campaign
   theme_bw()
 
 
-## nm - pull the matched real values keyed to the synthetic cells they replace
-real_values_for_extended_nm <- comparison_nm %>%
+## br - pull the matched real values keyed to the synthetic cells they replace
+real_values_for_extended_br <- comparison_br %>%
   select(predID = nearest_predID, CampaignNum = nearest_CampaignNum, Constituent,
          Conc_real, Site, CampaignID)
 
-## nm - check for collisions: >1 real site/campaign landing on the same synthetic cell
-collisions_nm <- real_values_for_extended_nm %>%
+## br - check for collisions: >1 real site/campaign landing on the same synthetic cell
+collisions_br <- real_values_for_extended_br %>%
   count(predID, CampaignNum, Constituent) %>%
   filter(n > 1)
 
-if (nrow(collisions_nm) > 0) {
-  cat("NM:", nrow(collisions_nm), "synthetic cell(s) matched by more than one real site/campaign -- averaging:\n")
+if (nrow(collisions_br) > 0) {
+  cat("br:", nrow(collisions_br), "synthetic cell(s) matched by more than one real site/campaign -- averaging:\n")
   print(
-    real_values_for_extended_nm %>%
-      semi_join(collisions_nm, by = c("predID", "CampaignNum", "Constituent")) %>%
+    real_values_for_extended_br %>%
+      semi_join(collisions_br, by = c("predID", "CampaignNum", "Constituent")) %>%
       arrange(predID, CampaignNum, Constituent)
   )
 }
 
-real_values_for_extended_nm_avg <- real_values_for_extended_nm %>%
+real_values_for_extended_br_avg <- real_values_for_extended_br %>%
   group_by(predID, CampaignNum, Constituent) %>%
   summarize(Conc_real = mean(Conc_real), n_real_obs = n(), .groups = "drop")
 
-## nm - substitute into extended_nm and flag which rows are real
-extended_nm_with_real <- extended_nm %>%
-  left_join(real_values_for_extended_nm_avg, by = c("predID", "CampaignNum", "Constituent")) %>%
+## br - substitute into extended_br and flag which rows are real
+extended_br_with_real <- extended_br %>%
+  left_join(real_values_for_extended_br_avg, by = c("predID", "CampaignNum", "Constituent")) %>%
   mutate(
     Source = ifelse(!is.na(Conc_real), "real", "synth"),
     Conc   = ifelse(!is.na(Conc_real), Conc_real, Conc)
   ) %>%
   select(-Conc_real, -n_real_obs)
 
-## nm - checks
-count(extended_nm_with_real, Source)
-extended_nm_with_real %>% filter(Source == "real") %>% count(CampaignNum)   # should only show 7, 8, 9
-nrow(real_values_for_extended_nm_avg) * 1 == sum(extended_nm_with_real$Source == "real")  # TRUE if no further collisions snuck through
+## br - checks
+count(extended_br_with_real, Source)
+extended_br_with_real %>% filter(Source == "real") %>% count(CampaignNum)   # should only show 2, 3, 4
+nrow(real_values_for_extended_br_avg) * 1 == sum(extended_br_with_real$Source == "real")  # TRUE if no further collisions snuck through
 
-## nm - plot
-summary_nm <- extended_nm_with_real %>%
+## br - plot
+summary_br <- extended_br_with_real %>%
   group_by(Constituent, CampaignNum, Day) %>%
   summarize(Mean_Conc = mean(Conc), P25_Conc = quantile(Conc, 0.25),
             P75_Conc = quantile(Conc, 0.75), .groups = "drop")
 
-real_points_nm <- extended_nm_with_real %>% filter(Source == "real")
+real_points_br <- extended_br_with_real %>% filter(Source == "real")
 
-p_combo_check <- ggplot(summary_nm, aes(x = Day / 365.25, y = Mean_Conc)) +
+p_combo_check <- ggplot(summary_br, aes(x = Day / 365.25, y = Mean_Conc)) +
   geom_ribbon(aes(ymin = P25_Conc, ymax = P75_Conc), fill = "grey70", alpha = 0.5) +
   geom_line(color = "grey30") +
   geom_point(aes(color = "Monthly mean (all predpts)"), size = 1) +
   geom_point(
-    data = real_points_nm,
+    data = real_points_br,
     aes(x = Day / 365.25, y = Conc, color = "Real observation"),
     size = 2.2, shape = 17
   ) +
@@ -1379,5 +1379,5 @@ p_combo_check
 
 ggsave(file.path(plot_dir, "Synthetic_with_real_mean_by_month.png"), p_combo_check, width = 8, height = 6, dpi = 150)
 
-## nm - save
-write_csv(extended_nm_with_real, file.path(data_out_dir, "nm_synthetic_with_real.csv"))
+## br - save
+write_csv(extended_br_with_real, file.path(data_out_dir, "br_synthetic_with_real.csv"))
