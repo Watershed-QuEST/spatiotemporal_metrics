@@ -712,7 +712,7 @@ p_combo_check <- ggplot(summary_nm, aes(x = Day / 365.25, y = Mean_Conc)) +
 
 p_combo_check
 
-ggsave(file.path(plot_dir, "Synthetic_with_real_mean_by_month.png"), p_combo_check, width = 8, height = 6, dpi = 150)
+ggsave(file.path(plot_dir, "Synthetic_with_real_mean_by_month_nm.png"), p_combo_check, width = 8, height = 6, dpi = 150)
 
 ## nm - save
 write_csv(extended_nm_with_real, file.path(data_out_dir, "nm_synthetic_with_real.csv"))
