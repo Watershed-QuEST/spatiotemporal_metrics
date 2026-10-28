@@ -123,6 +123,89 @@ p_cvs
 ggsave(file.path(plot_dir, "CVs_MC_plot_nm.png"), p_cvs, width = 7, height = 5, dpi = 150)
 
 
+# compute optimums
+bias_tol       <- 10    # percent; acceptable bias vs. model truth
+elbow_fraction <- 0.05 # elbow = marginal gain has dropped to this fraction of its steepest value
+
+optimal_n_list <- list()
+for (cc in constituents) {
+  cc_summary <- spatial_mc_summary %>%
+    filter(Constituent == cc) %>%
+    arrange(N)
+  
+  n_vals    <- cc_summary$N
+  width_pct <- (cc_summary$P95_CVs - cc_summary$P05_CVs) / cc_summary$Ref_CVs_MC * 100
+  
+  ## Criterion 1: precision elbow
+  marginal_rate   <- -diff(width_pct) / diff(n_vals)   # improvement in band width per added site
+  elbow_idx       <- which(marginal_rate <= elbow_fraction * max(marginal_rate))[1]
+  n_opt_precision <- if (is.na(elbow_idx)) NA_real_ else n_vals[elbow_idx + 1]
+  
+  ## Criterion 2: bias threshold (vs. model truth; swap to Pct_Bias_vs_Real to
+  ## use the realized-truth reference instead)
+  within_tol   <- abs(cc_summary$Pct_Bias_vs_MC) <= bias_tol
+  stays_within <- sapply(seq_along(within_tol), function(i) all(within_tol[i:length(within_tol)]))
+  bias_idx     <- which(stays_within)[1]
+  n_opt_bias   <- if (is.na(bias_idx)) NA_real_ else n_vals[bias_idx]
+  
+  optimal_n_list[[cc]] <- tibble(Constituent = cc,
+                                 N_optimal_precision = n_opt_precision,
+                                 N_optimal_bias      = n_opt_bias)
+}
+optimal_n <- bind_rows(optimal_n_list)
+print(optimal_n)
+
+
+#### Testing missing-data tolerance ####
+## Starting from the real data as actually collected (3 real campaigns, ~actual_n_sites sites), randomly drop data at increasing missing-data rates and see how much the resulting CVs estimate degrades relative to the no-missing-data baseline.
+
+missing_grid <- c(0.10, 0.25, 0.50, 0.75)   # fraction of data missing, tested at random
+
+missing_mc_results_list <- list()
+for (cc in constituents) {
+  campaign_vals <- split(clean[[cc]], clean$CampaignID)
+  campaign_vals <- lapply(campaign_vals, function(x) x[!is.na(x)])
+  
+  ## Baseline: CVs per real campaign using all the real data (no missingness),
+  ## averaged across the 3 real campaigns.
+  ref_cvs_missing <- mean(sapply(campaign_vals, function(vals) sd(vals) / mean(vals)))
+  
+  mc_results <- list()
+  for (pct_missing in missing_grid) {
+    cvs_draws <- numeric(n_iter)
+    for (i in seq_len(n_iter)) {
+      campaign_cvs <- sapply(campaign_vals, function(vals) {
+        n_keep <- max(2, round(length(vals) * (1 - pct_missing)))
+        kept   <- sample(vals, n_keep)
+        sd(kept) / mean(kept)
+      })
+      cvs_draws[i] <- mean(campaign_cvs)
+    }
+    mc_results[[paste(pct_missing)]] <- tibble(Constituent = cc, Pct_Missing = pct_missing * 100,
+                                               CVs = cvs_draws, Ref_CVs_Missing = ref_cvs_missing)
+  }
+  missing_mc_results_list[[cc]] <- bind_rows(mc_results)
+}
+missing_mc_results <- bind_rows(missing_mc_results_list)
+
+missing_mc_summary <- missing_mc_results %>%
+  group_by(Constituent, Pct_Missing) %>%
+  summarize(Median_CVs = median(CVs), P05_CVs = quantile(CVs, 0.05), P95_CVs = quantile(CVs, 0.95),
+            SD_CVs = sd(CVs), Ref_CVs_Missing = first(Ref_CVs_Missing), .groups = "drop") %>%
+  mutate(Pct_Bias = (Median_CVs - Ref_CVs_Missing) / Ref_CVs_Missing * 100)
+write_csv(missing_mc_summary, file.path(data_out_dir, "CVs_missing_data_summary_nm.csv"))
+
+p_missing <- ggplot(missing_mc_summary, aes(x = Pct_Missing, y = Median_CVs)) +
+  geom_ribbon(aes(ymin = P05_CVs, ymax = P95_CVs), fill = "grey70", alpha = 0.5) +
+  geom_line() + geom_point(size = 1.5) +
+  geom_hline(aes(yintercept = Ref_CVs_Missing), color = "blue", linetype = "dashed") +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
+  labs(x = "Missing data (%)", y = "CVs (median, 5th-95th pct band)",
+       title = "Missing-data tolerance -- nm",
+       subtitle = "Blue dashed = no-missing-data baseline (3 real campaigns, ~23 sites)") +
+  theme_bw()
+p_missing
+ggsave(file.path(plot_dir, "CVs_missing_data_plot_nm.png"), p_missing, width = 7, height = 5, dpi = 150)
 #### ----- br ----- ####
 #### Configure in/outputs and file structure ####
 
@@ -227,3 +310,36 @@ p_cvs <- ggplot(spatial_mc_summary, aes(x = N, y = Median_CVs)) +
   theme(legend.position = "bottom")
 p_cvs
 ggsave(file.path(plot_dir, "CVs_MC_plot_br.png"), p_cvs, width = 7, height = 5, dpi = 150)
+
+
+# compute optimums
+bias_tol       <- 10    # percent; acceptable bias vs. model truth
+elbow_fraction <- 0.05 # elbow = marginal gain has dropped to this fraction of its steepest value
+
+optimal_n_list <- list()
+for (cc in constituents) {
+  cc_summary <- spatial_mc_summary %>%
+    filter(Constituent == cc) %>%
+    arrange(N)
+  
+  n_vals    <- cc_summary$N
+  width_pct <- (cc_summary$P95_CVs - cc_summary$P05_CVs) / cc_summary$Ref_CVs_MC * 100
+  
+  ## Criterion 1: precision elbow
+  marginal_rate   <- -diff(width_pct) / diff(n_vals)   # improvement in band width per added site
+  elbow_idx       <- which(marginal_rate <= elbow_fraction * max(marginal_rate))[1]
+  n_opt_precision <- if (is.na(elbow_idx)) NA_real_ else n_vals[elbow_idx + 1]
+  
+  ## Criterion 2: bias threshold (vs. model truth; swap to Pct_Bias_vs_Real to
+  ## use the realized-truth reference instead)
+  within_tol   <- abs(cc_summary$Pct_Bias_vs_MC) <= bias_tol
+  stays_within <- sapply(seq_along(within_tol), function(i) all(within_tol[i:length(within_tol)]))
+  bias_idx     <- which(stays_within)[1]
+  n_opt_bias   <- if (is.na(bias_idx)) NA_real_ else n_vals[bias_idx]
+  
+  optimal_n_list[[cc]] <- tibble(Constituent = cc,
+                                 N_optimal_precision = n_opt_precision,
+                                 N_optimal_bias      = n_opt_bias)
+}
+optimal_n <- bind_rows(optimal_n_list)
+print(optimal_n)
