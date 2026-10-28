@@ -1,312 +1,512 @@
 #### READ ME ####
 
 # Project: Spatiotemporal Metrics
-# Author: Alex Webster, 2026-09-30 (with help building complex helper functions from Claude version 1.24012.9 (03c61d) 2026-07-24T04:59:17.000Z... heavily reviewed and edited by A. Webster)
-# Last update (Person, Date): 
+# Author: Alex Webster, 2026-07-28 (with help building complex helper functions from Claude version 1.24012.9 (03c61d) 2026-07-24T04:59:17.000Z... heavily reviewed and edited by A. Webster)
+# Last update (Person, Date): Alex Webster, 2026-10-28
 
-# Requires: 02_build_synthetic_data.R must be run first (produces data/*_clean.csv, data/*_field_setups.rds, and data/*_synthetic_extended.csv).
+# Requires: 02_build_synthetic_data.R must be run first (produces data/*_clean.csv and data/*_synthetic_extended.csv). Does NOT use *_field_setups.rds -- unlike the spatial version, there's no fitted temporal covariance model to draw fresh realizations from, so this reuses the already-expanded synthetic dataset (all ~60 synthetic campaigns per location) directly as the time-sampling population.
 
-# This script performs a sensitivity analysis to answer the question: how much does a CVt estimate vary/undershoot depending how many sampling campaigns are done? This analysis uses Monte Carlo iteration so the resulting uncertainty bands reflect fresh draws from all possibile fits to a SSN2 spatial covariance model. 
-# Ref_CVt (the "population truth" to compare against) comes from the extended static dataset created in 02_build_synthetic_data.R, which simulates 60 (1 per month x 5 years) synoptic campaigns.
+# This script performs a sensitivity analysis to answer the question: how much does a CVt estimate vary/undershoot depending on how many campaigns you sample? Each Monte Carlo iteration picks one synthetic-network location at random (that location's full synthetic time series stands in for "one hypothetical realization," playing the role a fresh covariance-model draw played in the spatial version) and subsamples N campaigns from that location's time series.
+# Ref_CVt_MC: the full-time-population CVt, averaged across all synthetic-network locations (internally consistent with the sampling procedure). Ref_CVt_Real: CVt at just the real-equivalent site locations, across all 60 synthetic campaigns.
 
 # Outputs:
-#   data/CVt_MC_summary.csv:  MC summary
-#   plots/CVt_MC_plot.png: CVs vs N, with reference line and bias annotation
-#   plots/CVt_sensitivity_metrics_plot.png: percent bias and SD vs N, side by side
+#   data/CVt_MC_summary_nm.csv / _br.csv
+#   plots/CVt_MC_plot_nm.png / _br.png
 
 #### Packages ####
 library(tidyverse)
+library(patchwork)
 
-
-
+#### ----- nm ----- ####
 #### Configure in/outputs and file structure ####
 
 data_out_dir <- "data"
 plot_dir     <- "plots"
 
-# Constituents to include in this analysis -- must match column names in data
 constituents <- c("NPOC..mg.C.L.", "TDN..mg.N.L.")
 
-# Monte Carlo iterations
-n_iter    <- 10000
-camp_grid <- c(2, 3, 4, 5, 7, 10, 15, 20, 30, 50)      # campaign counts to test
+n_iter        <- 10000               # Monte Carlo iterations
+campaign_grid <- c(3:30, 40, 50, 60)  # campaign counts to test
 
-n_synthetic_months <- 60      # must match 02_build_synthetic_data.R
-time_unit_days     <- 30.44   # must match 02_build_synthetic_data.R
-total_days <- n_synthetic_months * time_unit_days  # span campaign times are drawn from
+actual_n_campaigns <- 3  # real number of campaigns sampled -- same for nm and br
 
 set.seed(42)
 
-clean_nm            <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
-clean_nm$Catchment = "nm"
-clean_br            <- read_csv(file.path(data_out_dir, "br_clean.csv"), show_col_types = FALSE)
-clean_br$Catchment = "br"
+clean                   <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
+synthetic_extended_full <- read_csv(file.path(data_out_dir, "nm_synthetic_with_real.csv"), show_col_types = FALSE)
 
-clean <- bind_rows(clean_nm, clean_br)
+real_predids <- synthetic_extended_full %>%
+  filter(Source == "real") %>%
+  pull(predID) %>%
+  unique()
 
-field_setups       <- readRDS(file.path(data_out_dir, "nm_field_setups.rds"))
-synthetic_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.csv"), show_col_types = FALSE)
+synthetic_extended_real_locs <- synthetic_extended_full %>%
+  filter(predID %in% real_predids)
 
-actual_n_campaigns <- n_distinct(clean$CampaignID)  # real number of nm campaigns conducted
-
-
-#### PART A.1 -- Calculate CVt of real toy dataset ####
-# Per-site CV across that site's real campaigns
-
-## For each constituent in `constituents`: per-site CV across that site's real campaigns (sites with fewer than 3 real campaigns are dropped, since sd() of 1-2 points is too noisy to call a temporal CV).
-CVt_observed_list      <- list()
-CVt_observed_mean_list <- list()
-
-for (cc in constituents) {
-  
-  per_site_cvt <- clean %>%
-    filter(!is.na(.data[[cc]])) %>%
-    group_by(Site) %>%
-    summarize(n_sites = n(), CVt = sd(.data[[cc]]) / mean(.data[[cc]]), .groups = "drop") %>%
-    filter(n_sites >= 3)
-  
-  print(per_site_cvt)
-  
-  cvt_mean <- mean(per_site_cvt$CVt)
-  
-  CVt_observed_list[[cc]]      <- per_site_cvt %>% mutate(Constituent = cc, .before = 1)
-  CVt_observed_mean_list[[cc]] <- tibble(Constituent = cc, n_sites_used = nrow(per_site_cvt),
-                                         CVt_observed = cvt_mean)
-}
-
-
-## ---- Combine and save ----
-CVt_observed <- bind_rows(CVt_observed_list)
-write_csv(CVt_observed, file.path(data_out_dir, "CVt_observed.csv"))
-
-CVt_observed_mean <- bind_rows(CVt_observed_mean_list)
-write_csv(CVt_observed_mean, file.path(data_out_dir, "CVt_observed_mean.csv"))
-print(CVt_observed_mean)
-
-
-#### PART A.2 -- Calculate CVt of real toy dataset using package!! ####
-# CVt is calculated for one site across campaigns.
-
-CVt_result <- temporal_cv(data = clean,
-                          concentration = names(field_setups),
-                          site = "Site",
-                          digits = 2)
-
-# One row per site × constituent
-CVt_by_site.2 <- 
-  CVt_result$by_site %>%
-  transmute(Constituent = constituent,
-            Site,
-            n_sites = n_used,
-            CVt = temporal_cv)
-
-print(CVt_by_site.2)
-
-#write_csv(CVt_by_site.2, file.path(data_out_dir, "CVt_by_site.2.csv"))
-
-# Mean and SD across campaign-level CVs for each constituent
-CVt_observed.2 <- CVt_result$watershed_summary %>%
-  transmute(Constituent = constituent,
-            n_sites = n_sites_used,
-            Mean_CVt = mean_temporal_cv,
-            SD_CVt = sd_temporal_cv )
-
-print(CVt_observed.2)
-
-#write_csv(CVs_observed.2, file.path(data_out_dir, "CVs_observed.2.csv"))
-
-#### PART A.3 -- Compare original and package results ####
-site_comparison <- CVt_observed %>%
-  mutate(CVt_original_rounded = round(CVt, 2)) %>%
-  full_join(CVt_by_site.2 %>%
-              rename(
-                #n_sites_package = n_sites,
-                CVt_package = CVt ),
-            by = c("Constituent", "Site")) %>%
-  #rename(n_sites_original = n_sites) %>%
-  mutate(#n_sites_difference = n_sites_package - n_sites_original,
-    CVt_difference = CVt_package - CVt_original_rounded) %>%
-  arrange(Constituent, Site)
-
-print(site_comparison)
-
-
-#watershed summaries
-summary_comparison <- CVt_observed %>%
-  mutate(Mean_CVt_original_rounded = round(cvt_mean, 2)) %>% #,
-  #SD_CVt_original_rounded = round(SD_CVt, 2)) %>%
-  full_join(CVt_observed.2 %>%
-              rename(
-                # n_sites_package = n_sites_original,
-                Mean_CVt_package = Mean_CVt),
-            #SD_CVt_package = SD_CVt),
-            by = "Constituent") %>%
-  mutate(
-    Mean_CVt_difference = Mean_CVt_package - Mean_CVt_original_rounded ) %>% #,
-  # SD_CVt_difference = SD_CVt_package - SD_CVt_original_rounded) %>%
-  arrange(Constituent)
-
-print(summary_comparison, n = Inf)
-
-
-#visual comparison
-CVt_plot_data <- 
-  bind_rows(CVt_observed %>%
-              transmute(Constituent, Site, CVt,
-                        Approach = "Original QuEST calculation" ),
-            CVt_by_site.2 %>%
-              transmute(Constituent,Site, CVt, Approach = "CV helper")) %>%
-  filter(!is.na(CVt)) %>%
-  mutate(Approach = factor(Approach,
-                           levels = c("Original QuEST calculation", "CV helper") ) )
-
-
-p_cvt_comparison <- 
-  ggplot(CVt_plot_data, aes(x = Approach, y = CVt, fill = Approach)) +
-  geom_violin(
-    trim = FALSE,
-    alpha = 0.45,
-    color = NA ) +
-  geom_jitter(
-    width = 0.07,
-    height = 0,
-    size = 1.8,
-    alpha = 0.75 ) +
-  facet_wrap(~ Constituent,
-             scales = "free_y",
-             ncol = 2) +
-  scale_fill_manual(
-    values = c(
-      "Original QuEST calculation" = "#4C78A8",
-      "CV helper" = "#F58518" )) +
-  labs(title = "Temporal CV by calculation approach",
-       subtitle = "Each point is one sampling location",
-       x = NULL,
-       y = "Temporal coefficient of variation (CVt)",
-       fill = "Approach") +
-  theme_bw() +
-  theme(legend.position = "none",
-        axis.text.x = element_text(angle = 20, hjust = 1))
-
-p_cvt_comparison
-
-
-#### PART A.4 -- overall average for conceptual figure ####
-CVt_plot_data %>% summarise(mean = mean(CVt), sd = sd(CVt))
-
-
-#### PART B -- Monte Carlo temporal sensitivity analysis ####
-
-# For each constituent: draw n_iter independent synthetic draws at each campaign count in camp_grid, and see how the resulting CVt estimate's median and spread compare to Ref_CVt (the "full 5-year record" truth from the static extended dataset).
-
-# Each draw does the same four things:
-# 1. pick n random campaign dates across the 5-year synthetic span
-# 2. build spatially-correlated random noise for those n campaigns (using SSN2's fit, L_space below)
-# 3.correlate that noise across the n campaigns (red noise), based on how many days apart each pair of them is, using the fitted persistence estimate (rho)
-# 4. add SSN2's spatial mean and seasonal cycle, exponentiate back to the natural (non-log) scale, and compute the per-site CV across those n campaigns
-
-# The loops below iterate over constituents, campaignn, and n_iter random draws 
+#### Varying sample size in time ####
 
 temporal_mc_results_list <- list()
-
 for (cc in constituents) {
+  ## Population matrix: rows = synthetic campaigns, columns = locations.
+  ## Each column is one location's full realized time series -- the unit we
+  ## resample a random one of, per iteration, in place of a fresh MC draw.
+  sim_mat_time <- synthetic_extended_full %>%
+    filter(Constituent == cc) %>%
+    select(CampaignNum, predID, Conc) %>%
+    pivot_wider(names_from = predID, values_from = Conc) %>%
+    arrange(CampaignNum) %>%
+    select(-CampaignNum) %>%
+    as.matrix()
   
-  fs       <- field_setups[[cc]]
-  m        <- fs$setup$m           # number of predpts locations
-  mu_cond  <- fs$setup$mu_cond     # SSN2's kriged mean, one value per location
-  L_space  <- fs$setup$L_space     # SSN2's spatial Cholesky factor
-  beta     <- fs$beta              # seasonal-cycle coefficients (Intercept, logArea, sin, cos)
-  ref_doy  <- fs$ref_doy
-  rho      <- fs$temporal_rho      # red-noise persistence, from 02's residual diagnostic
+  m           <- nrow(sim_mat_time)  # number of campaigns in the full synthetic time series
+  n_locations <- ncol(sim_mat_time)  # number of locations available to draw from
+  this_campaign_grid <- sort(unique(c(campaign_grid[campaign_grid <= m], m)))
   
-  if (rho < 0 || rho >= 1) {
-    stop(cc, " temporal_rho (", rho, ") is outside [0, 1) -- this exponential-decay ",
-         "temporal correlation can't represent a negative value; see 02_build_synthetic_data.R's Part D.")
-  }
-  
-  # Reference CVt: the static extended dataset's per-site CV across all 60 synthetic months, averaged across all m predpts locations. This is a large, stable estimate of the "full temporal record" "truth"
-  ref_cvt <- synthetic_extended %>%
+  ## "Realized truth": CVt at the real-equivalent site locations, computed
+  ## over all m campaigns. Tied to the specific locations actually sampled.
+  ref_cvt_real <- synthetic_extended_real_locs %>%
     filter(Constituent == cc) %>%
     group_by(predID) %>%
     summarize(CVt = sd(Conc) / mean(Conc), .groups = "drop") %>%
     pull(CVt) %>% mean()
   
-  # The seasonal shift, evaluated at ref_doy 
-  ref_shift <- beta[3] * sin(2 * pi * ref_doy / 365) + beta[4] * cos(2 * pi * ref_doy / 365)
+  ## "Model truth": the full-time-population CVt (all m campaigns), averaged
+  ## across every location. Internally consistent with the subsampling loop
+  ## below, since it's drawn from the same sim_mat_time.
+  full_pop_cvt <- apply(sim_mat_time, 2, function(vals) sd(vals) / mean(vals))
+  ref_cvt_mc   <- mean(full_pop_cvt)
   
   mc_results <- list()
-  
-  for (n in camp_grid) {
-    
+  for (n in this_campaign_grid) {
     cvt_draws <- numeric(n_iter)
-    
     for (i in seq_len(n_iter)) {
-      
-      # Step 1: draw n random campaign dates across the 5-year synthetic span
-      t_sample   <- sort(runif(n, 0, total_days))
-      doy_sample <- t_sample %% 365.25
-      
-      # Step 2: generate spatially-correlated noise, one column per campaign
-      z             <- matrix(rnorm(m * n), nrow = m, ncol = n)
-      spatial_noise <- t(L_space) %*% z
-      
-      # Step 3: also correlate those n columns with each other, based on elapsed time between campaigns (red noise, if rho > 0; this reduces to no correlation at all if rho == 0).
-      elapsed_days  <- abs(outer(t_sample, t_sample, "-")) / time_unit_days
-      time_corr     <- rho ^ elapsed_days
-      time_chol     <- chol(time_corr + diag(1e-8, n))
-      noise         <- spatial_noise %*% t(time_chol)
-      
-      # Step 4: deterministic seasonal shift for these campaign dates (relative to ref_doy), then the full synthetic field: SSN2's spatial mean + seasonal shift + noise, exponentiated back to the natural (non-log) scale.
-      shift     <- beta[3] * sin(2 * pi * doy_sample / 365) +
-        beta[4] * cos(2 * pi * doy_sample / 365) - ref_shift
-      shift_mat <- matrix(shift, nrow = m, ncol = n, byrow = TRUE)
-      field     <- exp(mu_cond + shift_mat + noise)  # m x n, natural scale
-      
-      # Per-site CV across these n campaigns, averaged across all locations. 
-      row_mean     <- rowMeans(field)
-      row_sd       <- sqrt(rowSums((field - row_mean)^2) / (n - 1))
-      site_cvt     <- row_sd / row_mean
-      cvt_draws[i] <- mean(site_cvt)
+      loc_idx      <- sample(n_locations, 1)   # pick one location's realized time series
+      idx          <- sample(m, n)             # subsample n campaigns from it
+      vals         <- sim_mat_time[idx, loc_idx]
+      cvt_draws[i] <- sd(vals) / mean(vals)
     }
-    
-    mc_results[[paste(n)]] <- tibble(Constituent = cc, N = n, CVt = cvt_draws, Ref_CVt = ref_cvt)
+    mc_results[[paste(n)]] <- tibble(Constituent = cc, N = n, CVt = cvt_draws,
+                                     Ref_CVt_Real = ref_cvt_real, Ref_CVt_MC = ref_cvt_mc)
   }
-  
   temporal_mc_results_list[[cc]] <- bind_rows(mc_results)
 }
-
-## Combine all constituents, summarize, and plot
-
 temporal_mc_results <- bind_rows(temporal_mc_results_list)
 
 temporal_mc_summary <- temporal_mc_results %>%
   group_by(Constituent, N) %>%
   summarize(Median_CVt = median(CVt), P05_CVt = quantile(CVt, 0.05), P95_CVt = quantile(CVt, 0.95),
-            Ref_CVt = first(Ref_CVt), .groups = "drop") %>%
-  mutate(Pct_Bias = (Median_CVt - Ref_CVt) / Ref_CVt * 100)
+            SD_CVt = sd(CVt), Ref_CVt_Real = first(Ref_CVt_Real), Ref_CVt_MC = first(Ref_CVt_MC),
+            .groups = "drop") %>%
+  mutate(Pct_Bias_vs_MC     = (Median_CVt - Ref_CVt_MC) / Ref_CVt_MC * 100,
+         Pct_Bias_vs_Real   = (Median_CVt - Ref_CVt_Real) / Ref_CVt_Real * 100,
+         Pct_Gap_Real_vs_MC = (Ref_CVt_Real - Ref_CVt_MC) / Ref_CVt_MC * 100)
+write_csv(temporal_mc_summary, file.path(data_out_dir, "CVt_MC_summary_nm.csv"))
 
-print(temporal_mc_summary, n = Inf)
-
-write_csv(temporal_mc_summary, file.path(data_out_dir, "CVt_MC_summary.csv"))
-
-
-
-# One row per constituent, the analysis's own Pct_Bias at N = actual_n_campaigns
-bias_annot <- temporal_mc_summary %>%
-  filter(N == actual_n_campaigns) %>%
-  mutate(label = sprintf("At N=%d: %+.1f%% bias", N, Pct_Bias))
+bias_annot <- temporal_mc_summary %>% filter(N == actual_n_campaigns) %>%
+  mutate(label = sprintf("At N=%d: %+.1f%% bias (vs model truth)", N, Pct_Bias_vs_MC))
 
 p_cvt <- ggplot(temporal_mc_summary, aes(x = N, y = Median_CVt)) +
   geom_ribbon(aes(ymin = P05_CVt, ymax = P95_CVt), fill = "grey70", alpha = 0.5) +
   geom_line() + geom_point(size = 1.5) +
-  geom_hline(aes(yintercept = Ref_CVt), color = "blue", linetype = "dashed") +
-  geom_vline(xintercept = actual_n_campaigns, color = "red", linetype = "dashed") +
+  geom_hline(aes(yintercept = Ref_CVt_MC, color = "Model truth (MC population)"), linetype = "dashed") +
+  geom_hline(aes(yintercept = Ref_CVt_Real, color = "Realized truth (real sites)"), linetype = "dashed") +
+  geom_vline(xintercept = actual_n_campaigns, color = "red", linetype = "dotted") +
   geom_text(data = bias_annot, aes(x = Inf, y = Inf, label = label),
             hjust = 1.1, vjust = 1.5, size = 3.5, color = "red", inherit.aes = FALSE) +
+  scale_color_manual(name = "Reference",
+                     values = c("Model truth (MC population)" = "blue",
+                                "Realized truth (real sites)" = "darkgreen")) +
   facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
   labs(x = "Sample size (N campaigns)", y = "CVt (median, 5th-95th pct band)",
-       title = "Temporal sample-size sensitivity",
-       subtitle = "Blue = reference CVt (static extended dataset, all 60 synthetic months); red = actual sample size, annotated with pct bias at that N. Each Monte Carlo iteration redraws a fresh spatiotemporal field, campaign times drawn at random across a 5-year span.") +
+       title = "Temporal sample-size sensitivity -- nm",
+       subtitle = "Dashed = reference CVt; dotted red = actual sample size") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+p_cvt
+ggsave(file.path(plot_dir, "CVt_MC_plot_nm.png"), p_cvt, width = 7, height = 5, dpi = 150)
+
+
+# compute optimums
+bias_tol       <- 10
+elbow_fraction <- 0.05
+
+optimal_n_list <- list()
+for (cc in constituents) {
+  cc_summary <- temporal_mc_summary %>%
+    filter(Constituent == cc) %>%
+    arrange(N)
+  
+  n_vals    <- cc_summary$N
+  width_pct <- (cc_summary$P95_CVt - cc_summary$P05_CVt) / cc_summary$Ref_CVt_MC * 100
+  
+  marginal_rate   <- -diff(width_pct) / diff(n_vals)
+  elbow_idx       <- which(marginal_rate <= elbow_fraction * max(marginal_rate))[1]
+  n_opt_precision <- if (is.na(elbow_idx)) NA_real_ else n_vals[elbow_idx + 1]
+  
+  within_tol   <- abs(cc_summary$Pct_Bias_vs_MC) <= bias_tol
+  stays_within <- sapply(seq_along(within_tol), function(i) all(within_tol[i:length(within_tol)]))
+  bias_idx     <- which(stays_within)[1]
+  n_opt_bias   <- if (is.na(bias_idx)) NA_real_ else n_vals[bias_idx]
+  
+  optimal_n_list[[cc]] <- tibble(Constituent = cc,
+                                 N_optimal_precision = n_opt_precision,
+                                 N_optimal_bias      = n_opt_bias)
+}
+optimal_n_campaigns <- bind_rows(optimal_n_list)
+print(optimal_n_campaigns)
+
+#### Testing missing-data tolerance ####
+## Pools all real (site x campaign) readings across all real sites and
+## randomly drops a % of those INDIVIDUAL readings -- rather than whole
+## campaigns -- since with only 3 real campaigns per site, dropping at the
+## campaign level would only support 3 coarse outcomes (keep 1, 2, or 3).
+## CVt is recomputed per site from whichever campaigns remain there in that
+## draw; a site left with fewer than 2 readings is excluded from that draw's
+## across-site average.
+
+missing_grid <- c(0.05, 0.10, 0.2, 0.3, 0.4, 0.50, 0.6, 0.7, 0.8)
+
+missing_mc_results_list <- list()
+for (cc in constituents) {
+  readings <- clean %>%
+    select(Site, Value = all_of(cc)) %>%
+    filter(!is.na(Value))
+  
+  site_factor <- as.integer(factor(readings$Site))
+  values      <- readings$Value
+  n_readings  <- length(values)
+  
+  ## Baseline: CVt per site using all real readings (no missingness),
+  ## averaged across sites with at least 2 readings.
+  ref_cvt_missing <- readings %>%
+    group_by(Site) %>%
+    filter(n() >= 2) %>%
+    summarize(CVt = sd(Value) / mean(Value), .groups = "drop") %>%
+    pull(CVt) %>% mean()
+  
+  mc_results <- list()
+  for (pct_missing in missing_grid) {
+    n_keep    <- max(1, round(n_readings * (1 - pct_missing)))
+    cvt_draws <- numeric(n_iter)
+    for (i in seq_len(n_iter)) {
+      kept_idx <- sample(n_readings, n_keep)
+      kept_vals_by_site <- split(values[kept_idx], site_factor[kept_idx])
+      site_cvt <- sapply(kept_vals_by_site, function(v) {
+        if (length(v) >= 2) sd(v) / mean(v) else NA_real_
+      })
+      cvt_draws[i] <- if (all(is.na(site_cvt))) NA_real_ else mean(site_cvt, na.rm = TRUE)
+    }
+    mc_results[[paste(pct_missing)]] <- tibble(Constituent = cc, Pct_Missing = pct_missing * 100,
+                                               CVt = cvt_draws, Ref_CVt_Missing = ref_cvt_missing)
+  }
+  missing_mc_results_list[[cc]] <- bind_rows(mc_results)
+}
+missing_mc_results <- bind_rows(missing_mc_results_list)
+
+missing_mc_summary <- missing_mc_results %>%
+  group_by(Constituent, Pct_Missing) %>%
+  summarize(Median_CVt = median(CVt, na.rm = TRUE),
+            P05_CVt = quantile(CVt, 0.05, na.rm = TRUE),
+            P95_CVt = quantile(CVt, 0.95, na.rm = TRUE),
+            SD_CVt = sd(CVt, na.rm = TRUE),
+            Pct_Undefined = mean(is.na(CVt)) * 100,
+            Ref_CVt_Missing = first(Ref_CVt_Missing), .groups = "drop") %>%
+  mutate(Pct_Bias = (Median_CVt - Ref_CVt_Missing) / Ref_CVt_Missing * 100)
+write_csv(missing_mc_summary, file.path(data_out_dir, "CVt_missing_data_summary_nm.csv"))
+
+p_missing <- ggplot(missing_mc_summary, aes(x = Pct_Missing, y = Median_CVt)) +
+  geom_ribbon(aes(ymin = P05_CVt, ymax = P95_CVt), fill = "grey70", alpha = 0.5) +
+  geom_line() + geom_point(size = 1.5) +
+  geom_hline(aes(yintercept = Ref_CVt_Missing), color = "blue", linetype = "dashed") +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
+  labs(x = "Missing data (%)", y = "CVt (median, 5th-95th pct band)",
+       title = "Missing-data tolerance (temporal) -- nm",
+       subtitle = "Blue dashed = no-missing-data baseline (real sites, 3 real campaigns)") +
   theme_bw()
-ggsave(file.path(plot_dir, "CVt_MC_plot.png"), p_cvt, width = 8, height = 6, dpi = 150)
+p_missing
+ggsave(file.path(plot_dir, "CVt_missing_data_plot_nm.png"), p_missing, width = 7, height = 5, dpi = 150)
+
+
+## Compute the maximum allowable % missing data such that bias stays below
+## a chosen tolerance, interpolated between the tested missing_grid values
+
+bias_tol_missing  <- 10
+width_tol_missing <- 20
+
+find_allowable_pct <- function(pct_missing_vals, metric_vals, tol) {
+  pct_missing_vals <- c(0, pct_missing_vals)
+  metric_vals      <- c(0, metric_vals)
+  if (all(metric_vals <= tol)) {
+    max(pct_missing_vals)
+  } else if (metric_vals[2] > tol) {
+    0
+  } else {
+    approx(x = metric_vals, y = pct_missing_vals, xout = tol)$y
+  }
+}
+
+allowable_missing_list <- list()
+for (cc in constituents) {
+  cc_summary <- missing_mc_summary %>%
+    filter(Constituent == cc) %>%
+    arrange(Pct_Missing) %>%
+    mutate(Width_pct = (P95_CVt - P05_CVt) / Ref_CVt_Missing * 100)
+  
+  pct_allowable_bias  <- find_allowable_pct(cc_summary$Pct_Missing, abs(cc_summary$Pct_Bias), bias_tol_missing)
+  pct_allowable_width <- find_allowable_pct(cc_summary$Pct_Missing, cc_summary$Width_pct, width_tol_missing)
+  
+  allowable_missing_list[[cc]] <- tibble(Constituent = cc,
+                                         Allowable_Pct_Missing_Bias  = pct_allowable_bias,
+                                         Allowable_Pct_Missing_Width = pct_allowable_width,
+                                         Allowable_Pct_Missing       = min(pct_allowable_bias, pct_allowable_width))
+}
+allowable_missing <- bind_rows(allowable_missing_list)
+print(allowable_missing)
+
+
+#### ----- br ----- ####
+#### Configure in/outputs and file structure ####
+
+data_out_dir <- "data"
+plot_dir     <- "plots"
+
+constituents <- c("NPOC..mg.C.L.", "TDN..mg.N.L.")
+
+n_iter        <- 10000               # Monte Carlo iterations
+campaign_grid <- c(3:30, 40, 50, 60)  # campaign counts to test
+
+actual_n_campaigns <- 3  # real number of campaigns sampled 
+
+set.seed(42)
+
+clean                   <- read_csv(file.path(data_out_dir, "br_clean.csv"), show_col_types = FALSE)
+synthetic_extended_full <- read_csv(file.path(data_out_dir, "br_synthetic_with_real.csv"), show_col_types = FALSE)
+
+real_predids <- synthetic_extended_full %>%
+  filter(Source == "real") %>%
+  pull(predID) %>%
+  unique()
+
+synthetic_extended_real_locs <- synthetic_extended_full %>%
+  filter(predID %in% real_predids)
+
+#### Varying sample size in time ####
+
+temporal_mc_results_list <- list()
+for (cc in constituents) {
+  ## Population matrix: rows = synthetic campaigns, columns = locations.
+  ## Each column is one location's full realized time series -- the unit we
+  ## resample a random one of, per iteration, in place of a fresh MC draw.
+  sim_mat_time <- synthetic_extended_full %>%
+    filter(Constituent == cc) %>%
+    select(CampaignNum, predID, Conc) %>%
+    pivot_wider(names_from = predID, values_from = Conc) %>%
+    arrange(CampaignNum) %>%
+    select(-CampaignNum) %>%
+    as.matrix()
+  
+  m           <- nrow(sim_mat_time)  # number of campaigns in the full synthetic time series
+  n_locations <- ncol(sim_mat_time)  # number of locations available to draw from
+  this_campaign_grid <- sort(unique(c(campaign_grid[campaign_grid <= m], m)))
+  
+  ## "Realized truth": CVt at the real-equivalent site locations, computed
+  ## over all m campaigns. Tied to the specific locations actually sampled.
+  ref_cvt_real <- synthetic_extended_real_locs %>%
+    filter(Constituent == cc) %>%
+    group_by(predID) %>%
+    summarize(CVt = sd(Conc) / mean(Conc), .groups = "drop") %>%
+    pull(CVt) %>% mean()
+  
+  ## "Model truth": the full-time-population CVt (all m campaigns), averaged
+  ## across every location. Internally consistent with the subsampling loop
+  ## below, since it's drawn from the same sim_mat_time.
+  full_pop_cvt <- apply(sim_mat_time, 2, function(vals) sd(vals) / mean(vals))
+  ref_cvt_mc   <- mean(full_pop_cvt)
+  
+  mc_results <- list()
+  for (n in this_campaign_grid) {
+    cvt_draws <- numeric(n_iter)
+    for (i in seq_len(n_iter)) {
+      loc_idx      <- sample(n_locations, 1)   # pick one location's realized time series
+      idx          <- sample(m, n)             # subsample n campaigns from it
+      vals         <- sim_mat_time[idx, loc_idx]
+      cvt_draws[i] <- sd(vals) / mean(vals)
+    }
+    mc_results[[paste(n)]] <- tibble(Constituent = cc, N = n, CVt = cvt_draws,
+                                     Ref_CVt_Real = ref_cvt_real, Ref_CVt_MC = ref_cvt_mc)
+  }
+  temporal_mc_results_list[[cc]] <- bind_rows(mc_results)
+}
+temporal_mc_results <- bind_rows(temporal_mc_results_list)
+
+temporal_mc_summary <- temporal_mc_results %>%
+  group_by(Constituent, N) %>%
+  summarize(Median_CVt = median(CVt), P05_CVt = quantile(CVt, 0.05), P95_CVt = quantile(CVt, 0.95),
+            SD_CVt = sd(CVt), Ref_CVt_Real = first(Ref_CVt_Real), Ref_CVt_MC = first(Ref_CVt_MC),
+            .groups = "drop") %>%
+  mutate(Pct_Bias_vs_MC     = (Median_CVt - Ref_CVt_MC) / Ref_CVt_MC * 100,
+         Pct_Bias_vs_Real   = (Median_CVt - Ref_CVt_Real) / Ref_CVt_Real * 100,
+         Pct_Gap_Real_vs_MC = (Ref_CVt_Real - Ref_CVt_MC) / Ref_CVt_MC * 100)
+write_csv(temporal_mc_summary, file.path(data_out_dir, "CVt_MC_summary_br.csv"))
+
+bias_annot <- temporal_mc_summary %>% filter(N == actual_n_campaigns) %>%
+  mutate(label = sprintf("At N=%d: %+.1f%% bias (vs model truth)", N, Pct_Bias_vs_MC))
+
+p_cvt <- ggplot(temporal_mc_summary, aes(x = N, y = Median_CVt)) +
+  geom_ribbon(aes(ymin = P05_CVt, ymax = P95_CVt), fill = "grey70", alpha = 0.5) +
+  geom_line() + geom_point(size = 1.5) +
+  geom_hline(aes(yintercept = Ref_CVt_MC, color = "Model truth (MC population)"), linetype = "dashed") +
+  geom_hline(aes(yintercept = Ref_CVt_Real, color = "Realized truth (real sites)"), linetype = "dashed") +
+  geom_vline(xintercept = actual_n_campaigns, color = "red", linetype = "dotted") +
+  geom_text(data = bias_annot, aes(x = Inf, y = Inf, label = label),
+            hjust = 1.1, vjust = 1.5, size = 3.5, color = "red", inherit.aes = FALSE) +
+  scale_color_manual(name = "Reference",
+                     values = c("Model truth (MC population)" = "blue",
+                                "Realized truth (real sites)" = "darkgreen")) +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
+  labs(x = "Sample size (N campaigns)", y = "CVt (median, 5th-95th pct band)",
+       title = "Temporal sample-size sensitivity -- br",
+       subtitle = "Dashed = reference CVt; dotted red = actual sample size") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+p_cvt
+ggsave(file.path(plot_dir, "CVt_MC_plot_br.png"), p_cvt, width = 7, height = 5, dpi = 150)
+
+
+# compute optimums
+bias_tol       <- 10
+elbow_fraction <- 0.05
+
+optimal_n_list <- list()
+for (cc in constituents) {
+  cc_summary <- temporal_mc_summary %>%
+    filter(Constituent == cc) %>%
+    arrange(N)
+  
+  n_vals    <- cc_summary$N
+  width_pct <- (cc_summary$P95_CVt - cc_summary$P05_CVt) / cc_summary$Ref_CVt_MC * 100
+  
+  marginal_rate   <- -diff(width_pct) / diff(n_vals)
+  elbow_idx       <- which(marginal_rate <= elbow_fraction * max(marginal_rate))[1]
+  n_opt_precision <- if (is.na(elbow_idx)) NA_real_ else n_vals[elbow_idx + 1]
+  
+  within_tol   <- abs(cc_summary$Pct_Bias_vs_MC) <= bias_tol
+  stays_within <- sapply(seq_along(within_tol), function(i) all(within_tol[i:length(within_tol)]))
+  bias_idx     <- which(stays_within)[1]
+  n_opt_bias   <- if (is.na(bias_idx)) NA_real_ else n_vals[bias_idx]
+  
+  optimal_n_list[[cc]] <- tibble(Constituent = cc,
+                                 N_optimal_precision = n_opt_precision,
+                                 N_optimal_bias      = n_opt_bias)
+}
+optimal_n_campaigns <- bind_rows(optimal_n_list)
+print(optimal_n_campaigns)
+
+#### Testing missing-data tolerance ####
+## Pools all real (site x campaign) readings across all real sites and
+## randomly drops a % of those INDIVIDUAL readings -- rather than whole
+## campaigns -- since with only 3 real campaigns per site, dropping at the
+## campaign level would only support 3 coarse outcomes (keep 1, 2, or 3).
+## CVt is recomputed per site from whichever campaigns remain there in that
+## draw; a site left with fewer than 2 readings is excluded from that draw's
+## across-site average.
+
+missing_grid <- c(0.05, 0.10, 0.2, 0.3, 0.4, 0.50, 0.6, 0.7, 0.8)
+
+missing_mc_results_list <- list()
+for (cc in constituents) {
+  readings <- clean %>%
+    select(Site, Value = all_of(cc)) %>%
+    filter(!is.na(Value))
+  
+  site_factor <- as.integer(factor(readings$Site))
+  values      <- readings$Value
+  n_readings  <- length(values)
+  
+  ## Baseline: CVt per site using all real readings (no missingness),
+  ## averaged across sites with at least 2 readings.
+  ref_cvt_missing <- readings %>%
+    group_by(Site) %>%
+    filter(n() >= 2) %>%
+    summarize(CVt = sd(Value) / mean(Value), .groups = "drop") %>%
+    pull(CVt) %>% mean()
+  
+  mc_results <- list()
+  for (pct_missing in missing_grid) {
+    n_keep    <- max(1, round(n_readings * (1 - pct_missing)))
+    cvt_draws <- numeric(n_iter)
+    for (i in seq_len(n_iter)) {
+      kept_idx <- sample(n_readings, n_keep)
+      kept_vals_by_site <- split(values[kept_idx], site_factor[kept_idx])
+      site_cvt <- sapply(kept_vals_by_site, function(v) {
+        if (length(v) >= 2) sd(v) / mean(v) else NA_real_
+      })
+      cvt_draws[i] <- if (all(is.na(site_cvt))) NA_real_ else mean(site_cvt, na.rm = TRUE)
+    }
+    mc_results[[paste(pct_missing)]] <- tibble(Constituent = cc, Pct_Missing = pct_missing * 100,
+                                               CVt = cvt_draws, Ref_CVt_Missing = ref_cvt_missing)
+  }
+  missing_mc_results_list[[cc]] <- bind_rows(mc_results)
+}
+missing_mc_results <- bind_rows(missing_mc_results_list)
+
+missing_mc_summary <- missing_mc_results %>%
+  group_by(Constituent, Pct_Missing) %>%
+  summarize(Median_CVt = median(CVt, na.rm = TRUE),
+            P05_CVt = quantile(CVt, 0.05, na.rm = TRUE),
+            P95_CVt = quantile(CVt, 0.95, na.rm = TRUE),
+            SD_CVt = sd(CVt, na.rm = TRUE),
+            Pct_Undefined = mean(is.na(CVt)) * 100,
+            Ref_CVt_Missing = first(Ref_CVt_Missing), .groups = "drop") %>%
+  mutate(Pct_Bias = (Median_CVt - Ref_CVt_Missing) / Ref_CVt_Missing * 100)
+write_csv(missing_mc_summary, file.path(data_out_dir, "CVt_missing_data_summary_br.csv"))
+
+p_missing <- ggplot(missing_mc_summary, aes(x = Pct_Missing, y = Median_CVt)) +
+  geom_ribbon(aes(ymin = P05_CVt, ymax = P95_CVt), fill = "grey70", alpha = 0.5) +
+  geom_line() + geom_point(size = 1.5) +
+  geom_hline(aes(yintercept = Ref_CVt_Missing), color = "blue", linetype = "dashed") +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
+  labs(x = "Missing data (%)", y = "CVt (median, 5th-95th pct band)",
+       title = "Missing-data tolerance (temporal) -- br",
+       subtitle = "Blue dashed = no-missing-data baseline (real sites, 3 real campaigns)") +
+  theme_bw()
+p_missing
+ggsave(file.path(plot_dir, "CVt_missing_data_plot_br.png"), p_missing, width = 7, height = 5, dpi = 150)
+
+
+## Compute the maximum allowable % missing data such that bias stays below
+## a chosen tolerance, interpolated between the tested missing_grid values
+
+bias_tol_missing  <- 10
+width_tol_missing <- 20
+
+find_allowable_pct <- function(pct_missing_vals, metric_vals, tol) {
+  pct_missing_vals <- c(0, pct_missing_vals)
+  metric_vals      <- c(0, metric_vals)
+  if (all(metric_vals <= tol)) {
+    max(pct_missing_vals)
+  } else if (metric_vals[2] > tol) {
+    0
+  } else {
+    approx(x = metric_vals, y = pct_missing_vals, xout = tol)$y
+  }
+}
+
+allowable_missing_list <- list()
+for (cc in constituents) {
+  cc_summary <- missing_mc_summary %>%
+    filter(Constituent == cc) %>%
+    arrange(Pct_Missing) %>%
+    mutate(Width_pct = (P95_CVt - P05_CVt) / Ref_CVt_Missing * 100)
+  
+  pct_allowable_bias  <- find_allowable_pct(cc_summary$Pct_Missing, abs(cc_summary$Pct_Bias), bias_tol_missing)
+  pct_allowable_width <- find_allowable_pct(cc_summary$Pct_Missing, cc_summary$Width_pct, width_tol_missing)
+  
+  allowable_missing_list[[cc]] <- tibble(Constituent = cc,
+                                         Allowable_Pct_Missing_Bias  = pct_allowable_bias,
+                                         Allowable_Pct_Missing_Width = pct_allowable_width,
+                                         Allowable_Pct_Missing       = min(pct_allowable_bias, pct_allowable_width))
+}
+allowable_missing <- bind_rows(allowable_missing_list)
+print(allowable_missing)
 
