@@ -179,14 +179,94 @@ p_cv_comparison <-
        y = "Spatial coefficient of variation (CVs)",
        fill = "Approach") +
   theme_bw() +
-  theme(legend.position = "none",
-        axis.text.x = element_text(angle = 20, hjust = 1))
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
 
 p_cv_comparison
 
 
-#### PART A.4 -- overall average for conceptual figure ####
+#### PART A.4 -- calculate using extended synthetic data ####
+
+### Load data
+# chem data from synthetically extended data to use real sites but extend to 20 campaigns
+# nm
+extended_nm            <- read_csv(file.path(data_out_dir, "nm_synthetic_with_real.csv"), show_col_types = FALSE)
+# the predpts that actually have a real-data equivalent -- these are "the real sites"
+real_predIDs_nm <- extended_nm %>%
+  filter(Source == "real") %>%
+  distinct(predID) %>%
+  pull(predID)
+# 20 consecutive campaigns, beginning at the first campaign with real data
+start_campaign_nm <- extended_nm %>%
+  filter(Source == "real") %>%
+  pull(CampaignNum) %>%
+  min()
+campaign_range_nm <- start_campaign_nm:(start_campaign_nm + 19)
+real_sites_extended_nm <- extended_nm %>%
+  filter(predID %in% real_predIDs_nm, CampaignNum %in% campaign_range_nm)
+# br
+extended_br            <- read_csv(file.path(data_out_dir, "br_synthetic_with_real.csv"), show_col_types = FALSE)
+extended <- bind_rows(extended_nm, extended_br)
+# the predpts that actually have a real-data equivalent -- these are "the real sites"
+real_predIDs_br <- extended_br %>%
+  filter(Source == "real") %>%
+  distinct(predID) %>%
+  pull(predID)
+# 20 consecutive campaigns, beginning at the first campaign with real data
+start_campaign_br <- extended_br %>%
+  filter(Source == "real") %>%
+  pull(CampaignNum) %>%
+  min()
+campaign_range_br <- start_campaign_br:(start_campaign_br + 19)
+real_sites_extended_br <- extended_br %>%
+  filter(predID %in% real_predIDs_br, CampaignNum %in% campaign_range_br)
+
+# combine
+real_sites_extended = bind_rows(real_sites_extended_br, real_sites_extended_nm)
+# pivot
+real_sites_extended_wide <- real_sites_extended %>%
+  pivot_wider(
+    names_from  = Constituent,
+    values_from = c(Conc, Source)
+  )
+real_sites_extended_wide <- real_sites_extended_wide %>%
+  rename_with(~ str_remove(., "\\.\\.mg\\..*$"))
+
+## calculate CVs using package
+CVs_extended_result <- spatial_cv(
+                        data = real_sites_extended_wide,
+                        watershed = "Catchment",
+                         concentration = c("Conc_NPOC", "Conc_TDN"),
+                         event = "CampaignNum",
+                         digits = 2)
+
+# One row per campaign × constituent
+CVs_extended_by_campaign.2 <- 
+  CVs_extended_result$by_event %>%
+  transmute(Constituent = constituent,
+            Catchment,
+            CampaignNum,
+            n_sites = n_used,
+            CVs = spatial_cv) 
+
+print(CVs_extended_by_campaign.2)
+
+write_csv(CVs_extended_by_campaign.2, file.path(data_out_dir, "CVs_extended_by_campaign.csv"))
+
+
+
+#### PART A.5 -- overall average for conceptual figure ####
 
 CVs_by_campaign %>% group_by(Catchment, Constituent) %>% summarise(mean = mean(CVs), sd = sd(CVs))
+CVs_extended_by_campaign.2 %>% group_by(Catchment, Constituent) %>% summarise(mean = mean(CVs), sd = sd(CVs))
+
+
+
+#### PART B -- Final demonstration figures ####
+
+# QuEST calculation compared to helper/package function
+p_cv_comparison
+ggsave(file.path(plot_dir, "CVs_packagetoQuEST_comparision.png"), p_cv_comparison, width = 9, height = 6, dpi = 150)
+
+# CVs vs CVt: See CVt script!
 
 
