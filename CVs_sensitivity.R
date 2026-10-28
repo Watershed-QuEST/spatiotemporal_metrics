@@ -45,6 +45,11 @@ real_campaign_nums <- synthetic_extended %>%
 synthetic_extended <- synthetic_extended %>%
   filter(CampaignNum %in% real_campaign_nums)
 
+real_predids <- synthetic_extended %>%
+  filter(Source == "real") %>%
+  pull(predID) %>%
+  unique()
+
 #### Look at real data ####
 
 campaign_vals <- split(clean$TDN..mg.N.L., clean$CampaignID)
@@ -289,6 +294,96 @@ print(allowable_missing)
 
 
 
+#### Varying spatial distribution of sites (mainstem vs. tributary) ####
+## Holds N fixed at actual_n_sites and instead varies where those sites sit in the network: tributary-dominated, uniform (matching the real network's own mainstem:tributary mix), or mainstem-dominated. 
+#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv), split at the median area across the full synthetic population.
+
+predpts_attrs      <- read_csv(file.path(data_out_dir, "nm_predpts_attributes.csv"), show_col_types = FALSE)
+mainstem_threshold <- median(predpts_attrs$Area_m2)
+area_lookup        <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
+
+shift_fraction <- 0.99  # how far to move the real network's mainstem fraction toward each extreme
+
+distribution_mc_results_list <- list()
+for (cc in constituents) {
+  fs      <- field_setups[[cc]]
+  m       <- fs$setup$m
+  mu_cond <- fs$setup$mu_cond
+  L_space <- fs$setup$L_space
+  
+  ## Area for each of the m predpts, in the same P1..Pm order mu_cond/L_space
+  ## use (predID already confirmed to follow this exact sequential format).
+  area_by_pred <- area_lookup[paste0("P", seq_len(m))]
+  is_mainstem  <- area_by_pred >= mainstem_threshold
+  mainstem_idx <- which(is_mainstem)
+  trib_idx     <- which(!is_mainstem)
+  
+  ## The real network's own mix, under this same area threshold.
+  p_real <- mean(is_mainstem[real_predids])
+  
+  scenarios <- tibble(
+    Scenario = c("Tributary-dominated", "Uniform (real mix)", "Mainstem-dominated"),
+    Target_mainstem_frac = c(p_real * (1 - shift_fraction), p_real,
+                             p_real + shift_fraction * (1 - p_real))
+  )
+  
+  z             <- matrix(rnorm(m * n_iter), nrow = m, ncol = n_iter)
+  spatial_noise <- t(L_space) %*% z
+  sim_mat       <- exp(mu_cond + spatial_noise)
+  
+  ref_cvs_real <- synthetic_extended %>%
+    filter(Constituent == cc) %>%
+    group_by(CampaignNum) %>%
+    summarize(CVs = sd(Conc) / mean(Conc), .groups = "drop") %>%
+    pull(CVs) %>% mean()
+  
+  full_pop_cvs <- apply(sim_mat, 2, function(vals) sd(vals) / mean(vals))
+  ref_cvs_mc   <- mean(full_pop_cvs)
+  
+  mc_results <- list()
+  for (s in seq_len(nrow(scenarios))) {
+    scen_name  <- scenarios$Scenario[s]
+    n_mainstem <- min(max(round(scenarios$Target_mainstem_frac[s] * actual_n_sites), 0), actual_n_sites)
+    n_trib     <- actual_n_sites - n_mainstem
+    
+    cvs_draws <- numeric(n_iter)
+    for (i in seq_len(n_iter)) {
+      idx          <- c(sample(mainstem_idx, n_mainstem), sample(trib_idx, n_trib))
+      vals         <- sim_mat[idx, i]
+      cvs_draws[i] <- sd(vals) / mean(vals)
+    }
+    mc_results[[scen_name]] <- tibble(Constituent = cc, Scenario = scen_name, CVs = cvs_draws,
+                                      Ref_CVs_Real = ref_cvs_real, Ref_CVs_MC = ref_cvs_mc)
+  }
+  distribution_mc_results_list[[cc]] <- bind_rows(mc_results)
+}
+distribution_mc_results <- bind_rows(distribution_mc_results_list)
+
+distribution_mc_summary <- distribution_mc_results %>%
+  mutate(Scenario = factor(Scenario, levels = c("Tributary-dominated", "Uniform (real mix)", "Mainstem-dominated"))) %>%
+  group_by(Constituent, Scenario) %>%
+  summarize(Median_CVs = median(CVs), P05_CVs = quantile(CVs, 0.05), P95_CVs = quantile(CVs, 0.95),
+            SD_CVs = sd(CVs), Ref_CVs_Real = first(Ref_CVs_Real), Ref_CVs_MC = first(Ref_CVs_MC),
+            .groups = "drop") %>%
+  mutate(Pct_Bias_vs_MC   = (Median_CVs - Ref_CVs_MC) / Ref_CVs_MC * 100,
+         Pct_Bias_vs_Real = (Median_CVs - Ref_CVs_Real) / Ref_CVs_Real * 100)
+write_csv(distribution_mc_summary, file.path(data_out_dir, "CVs_distribution_summary_nm.csv"))
+
+p_dist_cvs <- ggplot(distribution_mc_summary, aes(x = Scenario, y = Median_CVs)) +
+  geom_pointrange(aes(ymin = P05_CVs, ymax = P95_CVs)) +
+  geom_hline(aes(yintercept = Ref_CVs_MC, color = "Model truth (MC population)"), linetype = "dashed") +
+  geom_hline(aes(yintercept = Ref_CVs_Real, color = "Realized truth (3 real campaigns)"), linetype = "dashed") +
+  scale_color_manual(name = "Reference",
+                     values = c("Model truth (MC population)" = "blue",
+                                "Realized truth (3 real campaigns)" = "darkgreen")) +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
+  labs(x = NULL, y = "CVs (median, 5th-95th pct band)",
+       title = "Spatial sampling-distribution sensitivity -- nm",
+       subtitle = paste0("N fixed at actual_n_sites = ", actual_n_sites, "; dashed = reference CVs")) +
+  theme_bw() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 20, hjust = 1))
+p_dist_cvs
+ggsave(file.path(plot_dir, "CVs_distribution_plot_nm.png"), p_dist_cvs, width = 7, height = 5, dpi = 150)
 #### ----- br ----- ####
 #### Configure in/outputs and file structure ####
 
@@ -315,6 +410,12 @@ real_campaign_nums <- synthetic_extended %>%
 
 synthetic_extended <- synthetic_extended %>%
   filter(CampaignNum %in% real_campaign_nums)
+
+real_predids <- synthetic_extended %>%
+  filter(Source == "real") %>%
+  pull(predID) %>%
+  unique()
+
 
 #### Look at real data ####
 
@@ -558,3 +659,94 @@ for (cc in constituents) {
 }
 allowable_missing <- bind_rows(allowable_missing_list)
 print(allowable_missing)
+
+#### Varying spatial distribution of sites (mainstem vs. tributary) ####
+## Holds N fixed at actual_n_sites and instead varies where those sites sit in the network: tributary-dominated, uniform (matching the real network's own mainstem:tributary mix), or mainstem-dominated. 
+#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv), split at the median area across the full synthetic population.
+
+predpts_attrs      <- read_csv(file.path(data_out_dir, "br_predpts_attributes_br.csv"), show_col_types = FALSE)
+mainstem_threshold <- median(predpts_attrs$Area_m2)
+area_lookup        <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
+
+shift_fraction <- 0.99  # how far to move the real network's mainstem fraction toward each extreme
+
+distribution_mc_results_list <- list()
+for (cc in constituents) {
+  fs      <- field_setups[[cc]]
+  m       <- fs$setup$m
+  mu_cond <- fs$setup$mu_cond
+  L_space <- fs$setup$L_space
+  
+  ## Area for each of the m predpts, in the same P1..Pm order mu_cond/L_space
+  ## use (predID already confirmed to follow this exact sequential format).
+  area_by_pred <- area_lookup[paste0("P", seq_len(m))]
+  is_mainstem  <- area_by_pred >= mainstem_threshold
+  mainstem_idx <- which(is_mainstem)
+  trib_idx     <- which(!is_mainstem)
+  
+  ## The real network's own mix, under this same area threshold.
+  p_real <- mean(is_mainstem[real_predids])
+  
+  scenarios <- tibble(
+    Scenario = c("Tributary-dominated", "Uniform (real mix)", "Mainstem-dominated"),
+    Target_mainstem_frac = c(p_real * (1 - shift_fraction), p_real,
+                             p_real + shift_fraction * (1 - p_real))
+  )
+  
+  z             <- matrix(rnorm(m * n_iter), nrow = m, ncol = n_iter)
+  spatial_noise <- t(L_space) %*% z
+  sim_mat       <- exp(mu_cond + spatial_noise)
+  
+  ref_cvs_real <- synthetic_extended %>%
+    filter(Constituent == cc) %>%
+    group_by(CampaignNum) %>%
+    summarize(CVs = sd(Conc) / mean(Conc), .groups = "drop") %>%
+    pull(CVs) %>% mean()
+  
+  full_pop_cvs <- apply(sim_mat, 2, function(vals) sd(vals) / mean(vals))
+  ref_cvs_mc   <- mean(full_pop_cvs)
+  
+  mc_results <- list()
+  for (s in seq_len(nrow(scenarios))) {
+    scen_name  <- scenarios$Scenario[s]
+    n_mainstem <- min(max(round(scenarios$Target_mainstem_frac[s] * actual_n_sites), 0), actual_n_sites)
+    n_trib     <- actual_n_sites - n_mainstem
+    
+    cvs_draws <- numeric(n_iter)
+    for (i in seq_len(n_iter)) {
+      idx          <- c(sample(mainstem_idx, n_mainstem), sample(trib_idx, n_trib))
+      vals         <- sim_mat[idx, i]
+      cvs_draws[i] <- sd(vals) / mean(vals)
+    }
+    mc_results[[scen_name]] <- tibble(Constituent = cc, Scenario = scen_name, CVs = cvs_draws,
+                                      Ref_CVs_Real = ref_cvs_real, Ref_CVs_MC = ref_cvs_mc)
+  }
+  distribution_mc_results_list[[cc]] <- bind_rows(mc_results)
+}
+distribution_mc_results <- bind_rows(distribution_mc_results_list)
+
+distribution_mc_summary <- distribution_mc_results %>%
+  mutate(Scenario = factor(Scenario, levels = c("Tributary-dominated", "Uniform (real mix)", "Mainstem-dominated"))) %>%
+  group_by(Constituent, Scenario) %>%
+  summarize(Median_CVs = median(CVs), P05_CVs = quantile(CVs, 0.05), P95_CVs = quantile(CVs, 0.95),
+            SD_CVs = sd(CVs), Ref_CVs_Real = first(Ref_CVs_Real), Ref_CVs_MC = first(Ref_CVs_MC),
+            .groups = "drop") %>%
+  mutate(Pct_Bias_vs_MC   = (Median_CVs - Ref_CVs_MC) / Ref_CVs_MC * 100,
+         Pct_Bias_vs_Real = (Median_CVs - Ref_CVs_Real) / Ref_CVs_Real * 100)
+write_csv(distribution_mc_summary, file.path(data_out_dir, "CVs_distribution_summary_br.csv"))
+
+p_dist_cvs <- ggplot(distribution_mc_summary, aes(x = Scenario, y = Median_CVs)) +
+  geom_pointrange(aes(ymin = P05_CVs, ymax = P95_CVs)) +
+  geom_hline(aes(yintercept = Ref_CVs_MC, color = "Model truth (MC population)"), linetype = "dashed") +
+  geom_hline(aes(yintercept = Ref_CVs_Real, color = "Realized truth (3 real campaigns)"), linetype = "dashed") +
+  scale_color_manual(name = "Reference",
+                     values = c("Model truth (MC population)" = "blue",
+                                "Realized truth (3 real campaigns)" = "darkgreen")) +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
+  labs(x = NULL, y = "CVs (median, 5th-95th pct band)",
+       title = "Spatial sampling-distribution sensitivity -- br",
+       subtitle = paste0("N fixed at actual_n_sites = ", actual_n_sites, "; dashed = reference CVs")) +
+  theme_bw() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 20, hjust = 1))
+p_dist_cvs
+ggsave(file.path(plot_dir, "CVs_distribution_plot_br.png"), p_dist_cvs, width = 7, height = 5, dpi = 150)
