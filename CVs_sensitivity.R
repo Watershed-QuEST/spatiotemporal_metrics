@@ -16,6 +16,7 @@
 
 #### Packages ####
 library(tidyverse)
+library(patchwork)
 
 #### ----- nm ----- ####
 #### Configure in/outputs and file structure ####
@@ -43,6 +44,48 @@ real_campaign_nums <- synthetic_extended %>%
 
 synthetic_extended <- synthetic_extended %>%
   filter(CampaignNum %in% real_campaign_nums)
+
+#### Look at real data ####
+
+campaign_vals <- split(clean$TDN..mg.N.L., clean$CampaignID)
+campaign_vals <- lapply(campaign_vals, function(x) x[!is.na(x)])
+
+for (cc in constituents) {
+  campaign_vals <- split(clean[[cc]], clean$CampaignID)
+  campaign_vals <- lapply(campaign_vals, function(x) x[!is.na(x)])
+  
+  cat("\n", cc, "\n")
+  for (name in names(campaign_vals)) {
+    v <- campaign_vals[[name]]
+    cat(" ", name, " mean:", round(mean(v), 3),
+        " sd:", round(sd(v), 3),
+        " range:", round(diff(range(v)), 3),
+        " CV:", round(sd(v) / mean(v), 3), "\n")
+  }
+}
+
+# plot underlying data distribution
+box_data <- clean %>%
+  pivot_longer(cols = all_of(constituents), names_to = "Constituent", values_to = "Conc") %>%
+  filter(!is.na(Conc))
+
+p_box <- ggplot(box_data, aes(x = CampaignID, y = Conc)) +
+  geom_boxplot(outlier.shape = NA, width = 0.5) +
+  geom_jitter(width = 0.15, alpha = 0.6, size = 1.5) +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 1) +
+  labs(x = "Campaign", y = "Concentration", title = "Boxplot") +
+  theme_bw()
+
+p_hist <- ggplot(box_data, aes(x = Conc)) +
+  geom_histogram(bins = 10, color = "white") +
+  facet_grid(Constituent ~ CampaignID, scales = "free") +
+  labs(x = "Concentration", y = "Count", title = "Histograms by campaign") +
+  theme_bw()
+
+p_dist <- (p_box | p_hist) +
+  plot_annotation(title = "Distribution of real concentration data -- nm")
+p_dist
+ggsave(file.path(plot_dir, "data_distribution_nm.png"), p_dist, width = 11, height = 5, dpi = 150)
 
 #### Varying sample size in space ####
 
@@ -159,7 +202,7 @@ print(optimal_n)
 #### Testing missing-data tolerance ####
 ## Starting from the real data as actually collected (3 real campaigns, ~actual_n_sites sites), randomly drop data at increasing missing-data rates and see how much the resulting CVs estimate degrades relative to the no-missing-data baseline.
 
-missing_grid <- c(0.10, 0.25, 0.50, 0.75)   # fraction of data missing, tested at random
+missing_grid <- c(0.05, 0.10, 0.2, 0.3, 0.4, 0.50, 0.6, 0.7, 0.8)   # fraction of data missing, tested at random
 
 missing_mc_results_list <- list()
 for (cc in constituents) {
@@ -206,6 +249,46 @@ p_missing <- ggplot(missing_mc_summary, aes(x = Pct_Missing, y = Median_CVs)) +
   theme_bw()
 p_missing
 ggsave(file.path(plot_dir, "CVs_missing_data_plot_nm.png"), p_missing, width = 7, height = 5, dpi = 150)
+
+
+## Compute the maximum allowable % missing data such that bias stays below a chosen tolerance, interpolated between the tested missing_grid values
+
+bias_tol_missing  <- 10   # percent; acceptable bias vs. no-missing-data baseline
+width_tol_missing <- 20   # percent; acceptable width of the P05-P95 band, relative to baseline CVs
+
+## Linear-interpolate the missing-data rate at which a metric (bias or band width, both expressed as % of the baseline CVs) first crosses a tolerance, given values at 0% missing (metric = 0 by definition) plus the tested grid.
+find_allowable_pct <- function(pct_missing_vals, metric_vals, tol) {
+  pct_missing_vals <- c(0, pct_missing_vals)
+  metric_vals      <- c(0, metric_vals)
+  if (all(metric_vals <= tol)) {
+    max(pct_missing_vals)                 # never crosses tolerance in the tested range
+  } else if (metric_vals[2] > tol) {
+    0                                      # already exceeds tolerance at the smallest tested rate
+  } else {
+    approx(x = metric_vals, y = pct_missing_vals, xout = tol)$y
+  }
+}
+
+allowable_missing_list <- list()
+for (cc in constituents) {
+  cc_summary <- missing_mc_summary %>%
+    filter(Constituent == cc) %>%
+    arrange(Pct_Missing) %>%
+    mutate(Width_pct = (P95_CVs - P05_CVs) / Ref_CVs_Missing * 100)
+  
+  pct_allowable_bias  <- find_allowable_pct(cc_summary$Pct_Missing, abs(cc_summary$Pct_Bias), bias_tol_missing)
+  pct_allowable_width <- find_allowable_pct(cc_summary$Pct_Missing, cc_summary$Width_pct, width_tol_missing)
+  
+  allowable_missing_list[[cc]] <- tibble(Constituent = cc,
+                                         Allowable_Pct_Missing_Bias  = pct_allowable_bias,
+                                         Allowable_Pct_Missing_Width = pct_allowable_width,
+                                         Allowable_Pct_Missing       = min(pct_allowable_bias, pct_allowable_width))
+}
+allowable_missing <- bind_rows(allowable_missing_list)
+print(allowable_missing)
+
+
+
 #### ----- br ----- ####
 #### Configure in/outputs and file structure ####
 
@@ -232,6 +315,48 @@ real_campaign_nums <- synthetic_extended %>%
 
 synthetic_extended <- synthetic_extended %>%
   filter(CampaignNum %in% real_campaign_nums)
+
+#### Look at real data ####
+
+campaign_vals <- split(clean$TDN..mg.N.L., clean$CampaignID)
+campaign_vals <- lapply(campaign_vals, function(x) x[!is.na(x)])
+
+for (cc in constituents) {
+  campaign_vals <- split(clean[[cc]], clean$CampaignID)
+  campaign_vals <- lapply(campaign_vals, function(x) x[!is.na(x)])
+  
+  cat("\n", cc, "\n")
+  for (name in names(campaign_vals)) {
+    v <- campaign_vals[[name]]
+    cat(" ", name, " mean:", round(mean(v), 3),
+        " sd:", round(sd(v), 3),
+        " range:", round(diff(range(v)), 3),
+        " CV:", round(sd(v) / mean(v), 3), "\n")
+  }
+}
+
+# plot underlying data distribution
+box_data <- clean %>%
+  pivot_longer(cols = all_of(constituents), names_to = "Constituent", values_to = "Conc") %>%
+  filter(!is.na(Conc))
+
+p_box <- ggplot(box_data, aes(x = CampaignID, y = Conc)) +
+  geom_boxplot(outlier.shape = NA, width = 0.5) +
+  geom_jitter(width = 0.15, alpha = 0.6, size = 1.5) +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 1) +
+  labs(x = "Campaign", y = "Concentration", title = "Boxplot") +
+  theme_bw()
+
+p_hist <- ggplot(box_data, aes(x = Conc)) +
+  geom_histogram(bins = 10, color = "white") +
+  facet_grid(Constituent ~ CampaignID, scales = "free") +
+  labs(x = "Concentration", y = "Count", title = "Histograms by campaign") +
+  theme_bw()
+
+p_dist <- (p_box | p_hist) +
+  plot_annotation(title = "Distribution of real concentration data -- br")
+p_dist
+ggsave(file.path(plot_dir, "data_distribution_br.png"), p_dist, width = 11, height = 5, dpi = 150)
 
 #### Varying sample size in space ####
 
@@ -343,3 +468,93 @@ for (cc in constituents) {
 }
 optimal_n <- bind_rows(optimal_n_list)
 print(optimal_n)
+
+#### Testing missing-data tolerance ####
+## Starting from the real data as actually collected (3 real campaigns, ~actual_n_sites sites), randomly drop data at increasing missing-data rates and see how much the resulting CVs estimate degrades relative to the no-missing-data baseline.
+
+missing_grid <- c(0.05, 0.10, 0.2, 0.3, 0.4, 0.50, 0.6, 0.7, 0.8)   # fraction of data missing, tested at random
+
+missing_mc_results_list <- list()
+for (cc in constituents) {
+  campaign_vals <- split(clean[[cc]], clean$CampaignID)
+  campaign_vals <- lapply(campaign_vals, function(x) x[!is.na(x)])
+  
+  ## Baseline: CVs per real campaign using all the real data (no missingness),
+  ## averaged across the 3 real campaigns.
+  ref_cvs_missing <- mean(sapply(campaign_vals, function(vals) sd(vals) / mean(vals)))
+  
+  mc_results <- list()
+  for (pct_missing in missing_grid) {
+    cvs_draws <- numeric(n_iter)
+    for (i in seq_len(n_iter)) {
+      campaign_cvs <- sapply(campaign_vals, function(vals) {
+        n_keep <- max(2, round(length(vals) * (1 - pct_missing)))
+        kept   <- sample(vals, n_keep)
+        sd(kept) / mean(kept)
+      })
+      cvs_draws[i] <- mean(campaign_cvs)
+    }
+    mc_results[[paste(pct_missing)]] <- tibble(Constituent = cc, Pct_Missing = pct_missing * 100,
+                                               CVs = cvs_draws, Ref_CVs_Missing = ref_cvs_missing)
+  }
+  missing_mc_results_list[[cc]] <- bind_rows(mc_results)
+}
+missing_mc_results <- bind_rows(missing_mc_results_list)
+
+missing_mc_summary <- missing_mc_results %>%
+  group_by(Constituent, Pct_Missing) %>%
+  summarize(Median_CVs = median(CVs), P05_CVs = quantile(CVs, 0.05), P95_CVs = quantile(CVs, 0.95),
+            SD_CVs = sd(CVs), Ref_CVs_Missing = first(Ref_CVs_Missing), .groups = "drop") %>%
+  mutate(Pct_Bias = (Median_CVs - Ref_CVs_Missing) / Ref_CVs_Missing * 100)
+write_csv(missing_mc_summary, file.path(data_out_dir, "CVs_missing_data_summary_br.csv"))
+
+p_missing <- ggplot(missing_mc_summary, aes(x = Pct_Missing, y = Median_CVs)) +
+  geom_ribbon(aes(ymin = P05_CVs, ymax = P95_CVs), fill = "grey70", alpha = 0.5) +
+  geom_line() + geom_point(size = 1.5) +
+  geom_hline(aes(yintercept = Ref_CVs_Missing), color = "blue", linetype = "dashed") +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
+  labs(x = "Missing data (%)", y = "CVs (median, 5th-95th pct band)",
+       title = "Missing-data tolerance -- br",
+       subtitle = "Blue dashed = no-missing-data baseline (3 real campaigns, ~23 sites)") +
+  theme_bw()
+p_missing
+ggsave(file.path(plot_dir, "CVs_missing_data_plot_br.png"), p_missing, width = 7, height = 5, dpi = 150)
+
+
+## Compute the maximum allowable % missing data such that bias stays below a chosen tolerance, interpolated between the tested missing_grid values
+
+bias_tol_missing  <- 10   # percent; acceptable bias vs. no-missing-data baseline
+width_tol_missing <- 20   # percent; acceptable width of the P05-P95 band, relative to baseline CVs
+
+## Linear-interpolate the missing-data rate at which a metric (bias or band
+## width, both expressed as % of the baseline CVs) first crosses a tolerance,
+## given values at 0% missing (metric = 0 by definition) plus the tested grid.
+find_allowable_pct <- function(pct_missing_vals, metric_vals, tol) {
+  pct_missing_vals <- c(0, pct_missing_vals)
+  metric_vals      <- c(0, metric_vals)
+  if (all(metric_vals <= tol)) {
+    max(pct_missing_vals)                 # never crosses tolerance in the tested range
+  } else if (metric_vals[2] > tol) {
+    0                                      # already exceeds tolerance at the smallest tested rate
+  } else {
+    approx(x = metric_vals, y = pct_missing_vals, xout = tol)$y
+  }
+}
+
+allowable_missing_list <- list()
+for (cc in constituents) {
+  cc_summary <- missing_mc_summary %>%
+    filter(Constituent == cc) %>%
+    arrange(Pct_Missing) %>%
+    mutate(Width_pct = (P95_CVs - P05_CVs) / Ref_CVs_Missing * 100)
+  
+  pct_allowable_bias  <- find_allowable_pct(cc_summary$Pct_Missing, abs(cc_summary$Pct_Bias), bias_tol_missing)
+  pct_allowable_width <- find_allowable_pct(cc_summary$Pct_Missing, cc_summary$Width_pct, width_tol_missing)
+  
+  allowable_missing_list[[cc]] <- tibble(Constituent = cc,
+                                         Allowable_Pct_Missing_Bias  = pct_allowable_bias,
+                                         Allowable_Pct_Missing_Width = pct_allowable_width,
+                                         Allowable_Pct_Missing       = min(pct_allowable_bias, pct_allowable_width))
+}
+allowable_missing <- bind_rows(allowable_missing_list)
+print(allowable_missing)
