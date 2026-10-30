@@ -2,16 +2,11 @@
 
 # Project: Spatiotemporal Metrics
 # Author: Alex Webster, 2026-07-28 (with help building complex helper functions from Claude version 1.24012.9 (03c61d) 2026-07-24T04:59:17.000Z... heavily reviewed and edited by A. Webster)
-# Last update (Person, Date): Alex Webster, 2026-10-28
+# Last update (Person, Date): Alex Webster, 2026-10-30
 
 # Requires: 02_build_synthetic_data.R must be run first (produces data/*_clean.csv and data/*_synthetic_extended.csv). Does NOT use *_field_setups.rds -- unlike the spatial version, there's no fitted temporal covariance model to draw fresh realizations from, so this reuses the already-expanded synthetic dataset (all ~60 synthetic campaigns per location) directly as the time-sampling population.
 
-# This script performs a sensitivity analysis to answer the question: how much does a CVt estimate vary/undershoot depending on how many campaigns you sample? Each Monte Carlo iteration picks one synthetic-network location at random (that location's full synthetic time series stands in for "one hypothetical realization," playing the role a fresh covariance-model draw played in the spatial version) and subsamples N campaigns from that location's time series.
-# Ref_CVt_MC: the full-time-population CVt, averaged across all synthetic-network locations (internally consistent with the sampling procedure). Ref_CVt_Real: CVt at just the real-equivalent site locations, across all 60 synthetic campaigns.
-
-# Outputs:
-#   data/CVt_MC_summary_nm.csv / _br.csv
-#   plots/CVt_MC_plot_nm.png / _br.png
+# This script performs a sensitivity analyses
 
 #### Packages ####
 library(tidyverse)
@@ -29,6 +24,8 @@ n_iter        <- 10000               # Monte Carlo iterations
 campaign_grid <- c(3:30, 40, 50, 60)  # campaign counts to test
 
 actual_n_campaigns <- 3  # real number of campaigns sampled -- same for nm and br
+actual_n_sites <- 23  # real number of sites sampled
+
 
 set.seed(42)
 
@@ -264,6 +261,170 @@ allowable_missing <- bind_rows(allowable_missing_list)
 print(allowable_missing)
 
 
+#### Varying spatial distribution of sites (mainstem vs. tributary) ####
+## Holds N fixed at actual_n_sites and instead varies where those sites sit in the network: tributary-dominated, uniform (matching the real network's own mainstem:tributary mix), or mainstem-dominated. 
+#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv) as >6% of the total watershed area
+
+
+predpts_attrs      <- read_csv(file.path(data_out_dir, "nm_predpts_attributes.csv"), show_col_types = FALSE)
+area_lookup        <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
+
+shift_fraction <- 0.99  # how far to move the real network's mainstem fraction toward each extreme
+
+# ---- Explicit, field-relevant area threshold (replaces population median)
+#mainstem_threshold <- 2*1000000  # m^2 (.5 km^2) - tune to whatever scale meaningfully separates mainstem-like from tributary-like reaches here
+total_watershed_area <- max(predpts_attrs$Area_m2)
+mainstem_frac_of_total <- 0.06  # tune
+mainstem_threshold <- mainstem_frac_of_total * total_watershed_area
+
+area_lookup <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
+
+# Real sites' own mainstem fraction, using the FULL (un-thinned) classification --
+# this should reflect what the real network actually looks like, not the thinned pool
+real_is_mainstem <- area_lookup[real_predids] >= mainstem_threshold
+p_real <- mean(real_is_mainstem)
+
+# ---- Nearest-neighbor spacing, to help choose a minimum separation distance
+nn_dist_mat <- as.matrix(dist(predpts_attrs[, c("X", "Y")]))
+diag(nn_dist_mat) <- NA
+print(summary(apply(nn_dist_mat, 1, min, na.rm = TRUE)))
+
+min_separation_mainstem_m <- 400
+min_separation_trib_m     <- 400   # more spacing between tributary points
+
+# ---- Decluster: thin each group to mutually separated points
+decluster_points <- function(predids, coords_lookup, min_dist, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  pts <- coords_lookup %>% filter(predID %in% predids)
+  keep <- character(0)
+  remaining <- pts
+  while (nrow(remaining) > 0) {
+    pick <- remaining[sample(nrow(remaining), 1), ]
+    keep <- c(keep, pick$predID)
+    d <- sqrt((remaining$X - pick$X)^2 + (remaining$Y - pick$Y)^2)
+    remaining <- remaining[d >= min_dist, ]
+  }
+  keep
+}
+
+is_mainstem_all <- area_lookup >= mainstem_threshold
+mainstem_predids_pool <- names(area_lookup)[is_mainstem_all]
+trib_predids_pool     <- names(area_lookup)[!is_mainstem_all]
+
+mainstem_predids_thin <- decluster_points(mainstem_predids_pool, predpts_attrs, min_separation_mainstem_m, seed = 1)
+trib_predids_thin     <- decluster_points(trib_predids_pool,     predpts_attrs, min_separation_trib_m, seed = 2)
+
+cat("Mainstem pool:", length(mainstem_predids_pool), "-> thinned to", length(mainstem_predids_thin), "\n")
+cat("Tributary pool:", length(trib_predids_pool), "-> thinned to", length(trib_predids_thin), "\n")
+cat("Need at least", actual_n_sites, "candidates available in the more restrictive pool.\n")
+
+# ---- Simple map of the mainstem/tributary sampling pools
+predpts_attrs <- predpts_attrs %>%
+  mutate(
+    Group = case_when(
+      predID %in% mainstem_predids_thin ~ "Mainstem (sampling pool)",
+      predID %in% trib_predids_thin     ~ "Tributary (sampling pool)",
+      is_mainstem_all[predID]           ~ "Mainstem (thinned out)",
+      TRUE                               ~ "Tributary (thinned out)"
+    )
+  )
+p_network_map <- ggplot(predpts_attrs, aes(x = X, y = Y, color = Group)) +
+  geom_point(size = 1.8, alpha = 0.8) +
+  coord_equal() +
+  scale_color_manual(values = c(
+    "Mainstem (sampling pool)"  = "red",
+    "Tributary (sampling pool)" = "orange",
+    "Mainstem (thinned out)"    = "grey",
+    "Tributary (thinned out)"   = "#2e86c1"
+  )) +
+  labs(title = paste0(toupper("nm"), ": mainstem/tributary sampling pools"),
+       x = NULL, y = NULL, color = NULL) +
+  theme_minimal()
+p_network_map
+
+# per-constituent loop
+distribution_mc_results_list_t <- list()
+for (cc in constituents) {
+  
+  # Full (unfiltered) time-sampling population: rows = all available campaigns, columns = locations (predID). 
+  # Column order is NOT guaranteed "P1,P2,..."
+  # (unlike sim_mat for CVs), so classify by the actual column label.
+  sim_mat_time <- synthetic_extended_full %>%
+    filter(Constituent == cc) %>%
+    select(predID, CampaignNum, Conc) %>%
+    pivot_wider(names_from = predID, values_from = Conc) %>%
+    arrange(CampaignNum) %>%
+    select(-CampaignNum) %>%
+    as.matrix()
+  
+  col_predids  <- colnames(sim_mat_time)
+  mainstem_idx <- which(col_predids %in% mainstem_predids_thin)
+  trib_idx     <- which(col_predids %in% trib_predids_thin)
+  
+  ## The real network's own mix, under the same area threshold (unchanged)
+  p_real <- mean(area_lookup[real_predids] >= mainstem_threshold)
+  
+  scenarios <- tibble(
+    Scenario = c("Tributary-dominated", "Uniform (real mix)", "Mainstem-dominated"),
+    Target_mainstem_frac = c(p_real * (1 - shift_fraction), p_real,
+                             p_real + shift_fraction * (1 - p_real))
+  )
+  
+  ref_cvt_real <- synthetic_extended_full %>%
+    filter(Constituent == cc, Source == "real") %>%
+    group_by(predID) %>%
+    summarize(CVt = sd(Conc) / mean(Conc), .groups = "drop") %>%
+    pull(CVt) %>% mean(na.rm = TRUE)
+  
+  full_pop_cvt <- apply(sim_mat_time, 2, function(vals) sd(vals, na.rm = TRUE) / mean(vals, na.rm = TRUE))
+  ref_cvt_mc   <- mean(full_pop_cvt, na.rm = TRUE)
+  
+  mc_results <- list()
+  for (s in seq_len(nrow(scenarios))) {
+    scen_name   <- scenarios$Scenario[s]
+    target_frac <- scenarios$Target_mainstem_frac[s]
+    
+    cvt_draws <- numeric(n_iter)
+    for (i in seq_len(n_iter)) {
+      loc_idx <- if (runif(1) < target_frac) sample(mainstem_idx, 1) else sample(trib_idx, 1)
+      camp_idx     <- sample(nrow(sim_mat_time), actual_n_campaigns)
+      vals         <- sim_mat_time[camp_idx, loc_idx]
+      cvt_draws[i] <- sd(vals, na.rm = TRUE) / mean(vals, na.rm = TRUE)
+    }
+    mc_results[[scen_name]] <- tibble(Constituent = cc, Scenario = scen_name, CVt = cvt_draws,
+                                      Ref_CVt_Real = ref_cvt_real, Ref_CVt_MC = ref_cvt_mc)
+  }
+  distribution_mc_results_list_t[[cc]] <- bind_rows(mc_results)
+}
+distribution_mc_results_t <- bind_rows(distribution_mc_results_list_t)
+
+distribution_mc_summary_t <- distribution_mc_results_t %>%
+  mutate(Scenario = factor(Scenario, levels = c("Tributary-dominated", "Uniform (real mix)", "Mainstem-dominated"))) %>%
+  group_by(Constituent, Scenario) %>%
+  summarize(Median_CVt = median(CVt), P05_CVt = quantile(CVt, 0.05), P95_CVt = quantile(CVt, 0.95),
+            SD_CVt = sd(CVt), Ref_CVt_Real = first(Ref_CVt_Real), Ref_CVt_MC = first(Ref_CVt_MC),
+            .groups = "drop") %>%
+  mutate(Pct_Bias_vs_MC   = (Median_CVt - Ref_CVt_MC) / Ref_CVt_MC * 100,
+         Pct_Bias_vs_Real = (Median_CVt - Ref_CVt_Real) / Ref_CVt_Real * 100)
+write_csv(distribution_mc_summary_t, file.path(data_out_dir, "CVt_distribution_summary_nm.csv"))
+
+p_dist_cvt <- ggplot(distribution_mc_summary_t, aes(x = Scenario, y = Median_CVt)) +
+  geom_pointrange(aes(ymin = P05_CVt, ymax = P95_CVt)) +
+  geom_hline(aes(yintercept = Ref_CVt_MC, color = "Model truth (MC population)"), linetype = "dashed") +
+  geom_hline(aes(yintercept = Ref_CVt_Real, color = "Realized truth (real campaigns)"), linetype = "dashed") +
+  scale_color_manual(name = "Reference",
+                     values = c("Model truth (MC population)" = "blue",
+                                "Realized truth (real campaigns)" = "darkgreen")) +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
+  labs(x = NULL, y = "CVt (median, 5th-95th pct band)",
+       title = "Temporal sampling-distribution sensitivity -- nm",
+       subtitle = paste0("Campaigns fixed at actual_n_campaigns = ", actual_n_campaigns, "; dashed = reference CVt")) +
+  theme_bw() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 20, hjust = 1))
+p_dist_cvt
+ggsave(file.path(plot_dir, "CVt_distribution_plot_nm.png"), p_dist_cvt, width = 7, height = 5, dpi = 150)
+
+
 #### ----- br ----- ####
 #### Configure in/outputs and file structure ####
 
@@ -276,6 +437,7 @@ n_iter        <- 10000               # Monte Carlo iterations
 campaign_grid <- c(3:30, 40, 50, 60)  # campaign counts to test
 
 actual_n_campaigns <- 3  # real number of campaigns sampled 
+actual_n_sites <- 19  # real number of sites sampled
 
 set.seed(42)
 
@@ -509,4 +671,168 @@ for (cc in constituents) {
 }
 allowable_missing <- bind_rows(allowable_missing_list)
 print(allowable_missing)
+
+
+#### Varying spatial distribution of sites (mainstem vs. tributary) ####
+## Holds N fixed at actual_n_sites and instead varies where those sites sit in the network: tributary-dominated, uniform (matching the real network's own mainstem:tributary mix), or mainstem-dominated. 
+#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv) as >6% of the total watershed area
+
+
+predpts_attrs      <- read_csv(file.path(data_out_dir, "br_predpts_attributes.csv"), show_col_types = FALSE)
+area_lookup        <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
+
+shift_fraction <- 0.99  # how far to move the real network's mainstem fraction toward each extreme
+
+# ---- Explicit, field-relevant area threshold (replaces population median)
+#mainstem_threshold <- 2*1000000  # m^2 (.5 km^2) - tune to whatever scale meaningfully separates mainstem-like from tributary-like reaches here
+total_watershed_area <- max(predpts_attrs$Area_m2)
+mainstem_frac_of_total <- 0.06  # tune
+mainstem_threshold <- mainstem_frac_of_total * total_watershed_area
+
+area_lookup <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
+
+# Real sites' own mainstem fraction, using the FULL (un-thinned) classification --
+# this should reflect what the real network actually looks like, not the thinned pool
+real_is_mainstem <- area_lookup[real_predids] >= mainstem_threshold
+p_real <- mean(real_is_mainstem)
+
+# ---- Nearest-neighbor spacing, to help choose a minimum separation distance
+nn_dist_mat <- as.matrix(dist(predpts_attrs[, c("X", "Y")]))
+diag(nn_dist_mat) <- NA
+print(summary(apply(nn_dist_mat, 1, min, na.rm = TRUE)))
+
+min_separation_mainstem_m <- 400
+min_separation_trib_m     <- 400   # more spacing between tributary points
+
+# ---- Decluster: thin each group to mutually separated points
+decluster_points <- function(predids, coords_lookup, min_dist, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  pts <- coords_lookup %>% filter(predID %in% predids)
+  keep <- character(0)
+  remaining <- pts
+  while (nrow(remaining) > 0) {
+    pick <- remaining[sample(nrow(remaining), 1), ]
+    keep <- c(keep, pick$predID)
+    d <- sqrt((remaining$X - pick$X)^2 + (remaining$Y - pick$Y)^2)
+    remaining <- remaining[d >= min_dist, ]
+  }
+  keep
+}
+
+is_mainstem_all <- area_lookup >= mainstem_threshold
+mainstem_predids_pool <- names(area_lookup)[is_mainstem_all]
+trib_predids_pool     <- names(area_lookup)[!is_mainstem_all]
+
+mainstem_predids_thin <- decluster_points(mainstem_predids_pool, predpts_attrs, min_separation_mainstem_m, seed = 1)
+trib_predids_thin     <- decluster_points(trib_predids_pool,     predpts_attrs, min_separation_trib_m, seed = 2)
+
+cat("Mainstem pool:", length(mainstem_predids_pool), "-> thinned to", length(mainstem_predids_thin), "\n")
+cat("Tributary pool:", length(trib_predids_pool), "-> thinned to", length(trib_predids_thin), "\n")
+cat("Need at least", actual_n_sites, "candidates available in the more restrictive pool.\n")
+
+# ---- Simple map of the mainstem/tributary sampling pools
+predpts_attrs <- predpts_attrs %>%
+  mutate(
+    Group = case_when(
+      predID %in% mainstem_predids_thin ~ "Mainstem (sampling pool)",
+      predID %in% trib_predids_thin     ~ "Tributary (sampling pool)",
+      is_mainstem_all[predID]           ~ "Mainstem (thinned out)",
+      TRUE                               ~ "Tributary (thinned out)"
+    )
+  )
+p_network_map <- ggplot(predpts_attrs, aes(x = X, y = Y, color = Group)) +
+  geom_point(size = 1.8, alpha = 0.8) +
+  coord_equal() +
+  scale_color_manual(values = c(
+    "Mainstem (sampling pool)"  = "red",
+    "Tributary (sampling pool)" = "orange",
+    "Mainstem (thinned out)"    = "grey",
+    "Tributary (thinned out)"   = "#2e86c1"
+  )) +
+  labs(title = paste0(toupper("br"), ": mainstem/tributary sampling pools"),
+       x = NULL, y = NULL, color = NULL) +
+  theme_minimal()
+p_network_map
+
+# per-constituent loop
+distribution_mc_results_list_t <- list()
+for (cc in constituents) {
+  
+  # Full (unfiltered) time-sampling population: rows = all available campaigns, columns = locations (predID). 
+  # Column order is NOT guaranteed "P1,P2,..."
+  # (unlike sim_mat for CVs), so classify by the actual column label.
+  sim_mat_time <- synthetic_extended_full %>%
+    filter(Constituent == cc) %>%
+    select(predID, CampaignNum, Conc) %>%
+    pivot_wider(names_from = predID, values_from = Conc) %>%
+    arrange(CampaignNum) %>%
+    select(-CampaignNum) %>%
+    as.matrix()
+  
+  col_predids  <- colnames(sim_mat_time)
+  mainstem_idx <- which(col_predids %in% mainstem_predids_thin)
+  trib_idx     <- which(col_predids %in% trib_predids_thin)
+  
+  ## The real network's own mix, under the same area threshold (unchanged)
+  p_real <- mean(area_lookup[real_predids] >= mainstem_threshold)
+  
+  scenarios <- tibble(
+    Scenario = c("Tributary-dominated", "Uniform (real mix)", "Mainstem-dominated"),
+    Target_mainstem_frac = c(p_real * (1 - shift_fraction), p_real,
+                             p_real + shift_fraction * (1 - p_real))
+  )
+  
+  ref_cvt_real <- synthetic_extended_full %>%
+    filter(Constituent == cc, Source == "real") %>%
+    group_by(predID) %>%
+    summarize(CVt = sd(Conc) / mean(Conc), .groups = "drop") %>%
+    pull(CVt) %>% mean(na.rm = TRUE)
+  
+  full_pop_cvt <- apply(sim_mat_time, 2, function(vals) sd(vals, na.rm = TRUE) / mean(vals, na.rm = TRUE))
+  ref_cvt_mc   <- mean(full_pop_cvt, na.rm = TRUE)
+  
+  mc_results <- list()
+  for (s in seq_len(nrow(scenarios))) {
+    scen_name   <- scenarios$Scenario[s]
+    target_frac <- scenarios$Target_mainstem_frac[s]
+    
+    cvt_draws <- numeric(n_iter)
+    for (i in seq_len(n_iter)) {
+      loc_idx <- if (runif(1) < target_frac) sample(mainstem_idx, 1) else sample(trib_idx, 1)
+      camp_idx     <- sample(nrow(sim_mat_time), actual_n_campaigns)
+      vals         <- sim_mat_time[camp_idx, loc_idx]
+      cvt_draws[i] <- sd(vals, na.rm = TRUE) / mean(vals, na.rm = TRUE)
+    }
+    mc_results[[scen_name]] <- tibble(Constituent = cc, Scenario = scen_name, CVt = cvt_draws,
+                                      Ref_CVt_Real = ref_cvt_real, Ref_CVt_MC = ref_cvt_mc)
+  }
+  distribution_mc_results_list_t[[cc]] <- bind_rows(mc_results)
+}
+distribution_mc_results_t <- bind_rows(distribution_mc_results_list_t)
+
+distribution_mc_summary_t <- distribution_mc_results_t %>%
+  mutate(Scenario = factor(Scenario, levels = c("Tributary-dominated", "Uniform (real mix)", "Mainstem-dominated"))) %>%
+  group_by(Constituent, Scenario) %>%
+  summarize(Median_CVt = median(CVt), P05_CVt = quantile(CVt, 0.05), P95_CVt = quantile(CVt, 0.95),
+            SD_CVt = sd(CVt), Ref_CVt_Real = first(Ref_CVt_Real), Ref_CVt_MC = first(Ref_CVt_MC),
+            .groups = "drop") %>%
+  mutate(Pct_Bias_vs_MC   = (Median_CVt - Ref_CVt_MC) / Ref_CVt_MC * 100,
+         Pct_Bias_vs_Real = (Median_CVt - Ref_CVt_Real) / Ref_CVt_Real * 100)
+write_csv(distribution_mc_summary_t, file.path(data_out_dir, "CVt_distribution_summary_br.csv"))
+
+p_dist_cvt <- ggplot(distribution_mc_summary_t, aes(x = Scenario, y = Median_CVt)) +
+  geom_pointrange(aes(ymin = P05_CVt, ymax = P95_CVt)) +
+  geom_hline(aes(yintercept = Ref_CVt_MC, color = "Model truth (MC population)"), linetype = "dashed") +
+  geom_hline(aes(yintercept = Ref_CVt_Real, color = "Realized truth (real campaigns)"), linetype = "dashed") +
+  scale_color_manual(name = "Reference",
+                     values = c("Model truth (MC population)" = "blue",
+                                "Realized truth (real campaigns)" = "darkgreen")) +
+  facet_wrap(~ Constituent, scales = "free_y", ncol = 2) +
+  labs(x = NULL, y = "CVt (median, 5th-95th pct band)",
+       title = "Temporal sampling-distribution sensitivity -- br",
+       subtitle = paste0("Campaigns fixed at actual_n_campaigns = ", actual_n_campaigns, "; dashed = reference CVt")) +
+  theme_bw() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 20, hjust = 1))
+p_dist_cvt
+ggsave(file.path(plot_dir, "CVt_distribution_plot_br.png"), p_dist_cvt, width = 7, height = 5, dpi = 150)
 
