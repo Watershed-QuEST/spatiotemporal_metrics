@@ -296,7 +296,7 @@ print(allowable_missing)
 
 #### Varying spatial distribution of sites (mainstem vs. tributary) ####
 ## Holds N fixed at actual_n_sites and instead varies where those sites sit in the network: tributary-dominated, uniform (matching the real network's own mainstem:tributary mix), or mainstem-dominated. 
-#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv) as >60% of the total watershed area
+#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv) as >6% of the total watershed area
 
 predpts_attrs      <- read_csv(file.path(data_out_dir, "nm_predpts_attributes.csv"), show_col_types = FALSE)
 area_lookup        <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
@@ -323,9 +323,6 @@ print(summary(apply(nn_dist_mat, 1, min, na.rm = TRUE)))
 
 min_separation_mainstem_m <- 400
 min_separation_trib_m     <- 400   # more spacing between tributary points
-
-mainstem_predids_thin <- decluster_points(mainstem_predids_pool, predpts_attrs, min_separation_mainstem_m, seed = 1)
-trib_predids_thin     <- decluster_points(trib_predids_pool,     predpts_attrs, min_separation_trib_m,     seed = 2)
 
 # ---- Decluster: thin each group to mutually separated points
 decluster_points <- function(predids, coords_lookup, min_dist, seed = NULL) {
@@ -763,9 +760,6 @@ print(summary(apply(nn_dist_mat, 1, min, na.rm = TRUE)))
 min_separation_mainstem_m <- 400
 min_separation_trib_m     <- 400   # more spacing between tributary points
 
-mainstem_predids_thin <- decluster_points(mainstem_predids_pool, predpts_attrs, min_separation_mainstem_m, seed = 1)
-trib_predids_thin     <- decluster_points(trib_predids_pool,     predpts_attrs, min_separation_trib_m,     seed = 2)
-
 # ---- Decluster: thin each group to mutually separated points
 decluster_points <- function(predids, coords_lookup, min_dist, seed = NULL) {
   if (!is.null(seed)) set.seed(seed)
@@ -780,6 +774,10 @@ decluster_points <- function(predids, coords_lookup, min_dist, seed = NULL) {
   }
   keep
 }
+
+mainstem_predids_thin <- decluster_points(mainstem_predids_pool, predpts_attrs, min_separation_mainstem_m, seed = 1)
+trib_predids_thin     <- decluster_points(trib_predids_pool,     predpts_attrs, min_separation_trib_m,     seed = 2)
+
 
 is_mainstem_all <- area_lookup >= mainstem_threshold
 mainstem_predids_pool <- names(area_lookup)[is_mainstem_all]
