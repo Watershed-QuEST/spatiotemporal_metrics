@@ -31,15 +31,15 @@ data_out_dir <- "data"
 plot_dir     <- "plots"
 
 nm_toy           <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
-nm_toy_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.csv"), show_col_types = FALSE)
+nm_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.csv"), show_col_types = FALSE)
 nm_field_setups     <- readRDS(file.path(data_out_dir, "nm_field_setups.rds"))
 
 br_toy           <- read_csv(file.path(data_out_dir, "br_clean.csv"), show_col_types = FALSE)
-br_toy_extended <- read_csv(file.path(data_out_dir, "br_synthetic_extended.csv"), show_col_types = FALSE)
+br_extended <- read_csv(file.path(data_out_dir, "br_synthetic_extended.csv"), show_col_types = FALSE)
 br_field_setups     <- readRDS(file.path(data_out_dir, "br_field_setups.rds"))
 
 # Monte Carlo iterations
-n_iter    <- 200 #test
+n_iter    <- 10000 
 camp_grid <- c(2, 3, 4, 5, 7, 10, 15, 20, 30, 50)      # campaign counts to test
 constituents <- c("NPOC..mg.C.L.", "TDN..mg.N.L.")
 
@@ -76,6 +76,7 @@ br_sites <- br_toy %>%
   unique()
 
 br_site_pairs <- combn(br_sites, 2, simplify = FALSE)
+
 
 #### Synchrony of one variable between two sites####
 ## NM ## 
@@ -200,6 +201,14 @@ nresults <- lapply(br_site_pairs, function(pair) {
 nresults_br <- bind_rows(nresults)
 nresults_br <- na.omit(nresults_br)
 
+# Combine data sets
+synchrony_all <- bind_rows(
+  results_nm  %>% mutate(watershed = "nm", variable = "NPOC"),
+  nresults_nm %>% mutate(watershed = "nm", variable = "TDN"),
+  results_br  %>% mutate(watershed = "br", variable = "NPOC"),
+  nresults_br %>% mutate(watershed = "br", variable = "TDN")
+) %>%
+  select(watershed, variable, site_x, site_y, synchrony)
 
 #### Synchrony between two variables (NPOC and TDN) at one site ####
 # NM #
@@ -1049,3 +1058,189 @@ p_sync <- ggplot(sync_mc_summary, aes(x = N, y = Median_Sync)) +
 
 print(p_sync)
 ggsave(file.path(plot_dir, "synchrony_MC_plot_br.png"), p_sync, width = 10, height = 4, dpi = 150)
+
+###############################
+#### Demonstration Figures ####
+###############################
+#### Comparison between real v. extended dataset - pairwise sites ####
+# Configure extended data #
+# nm_extended <- nm_extended %>%
+#   pivot_wider(names_from = Constituent, values_from = Conc)
+# 
+# br_extended <- br_extended %>%
+#   pivot_wider(names_from = Constituent, values_from = Conc)
+
+### Load data
+# chem data from synthetically extended data to use real sites but extend to 20 campaigns
+# nm
+extended_nm            <- read_csv(file.path(data_out_dir, "nm_synthetic_with_real.csv"), show_col_types = FALSE)
+# the predpts that actually have a real-data equivalent -- these are "the real sites"
+real_predIDs_nm <- extended_nm %>%
+  filter(Source == "real") %>%
+  distinct(predID) %>%
+  pull(predID)
+# 20 consecutive campaigns, beginning at the first campaign with real data
+start_campaign_nm <- extended_nm %>%
+  filter(Source == "real") %>%
+  pull(CampaignNum) %>%
+  min()
+campaign_range_nm <- start_campaign_nm:(start_campaign_nm + 19)
+real_sites_extended_nm <- extended_nm %>%
+  filter(predID %in% real_predIDs_nm, CampaignNum %in% campaign_range_nm)
+# br
+extended_br            <- read_csv(file.path(data_out_dir, "br_synthetic_with_real.csv"), show_col_types = FALSE)
+extended <- bind_rows(extended_nm, extended_br)
+# the predpts that actually have a real-data equivalent -- these are "the real sites"
+real_predIDs_br <- extended_br %>%
+  filter(Source == "real") %>%
+  distinct(predID) %>%
+  pull(predID)
+# 20 consecutive campaigns, beginning at the first campaign with real data
+start_campaign_br <- extended_br %>%
+  filter(Source == "real") %>%
+  pull(CampaignNum) %>%
+  min()
+campaign_range_br <- start_campaign_br:(start_campaign_br + 19)
+real_sites_extended_br <- extended_br %>%
+  filter(predID %in% real_predIDs_br, CampaignNum %in% campaign_range_br)
+
+# combine
+real_sites_extended = bind_rows(real_sites_extended_br, real_sites_extended_nm)
+# pivot
+real_sites_extended_wide <- real_sites_extended %>%
+  pivot_wider(
+    names_from  = Constituent,
+    values_from = c(Conc, Source)
+  )
+real_sites_extended_wide <- real_sites_extended_wide %>%
+  rename_with(~ str_remove(., "\\.\\.mg\\..*$"))
+
+#Generate results for extended data #
+# NM NPOC
+# Loop over each pair and calculate synchrony for one variable
+results <- lapply(nm_site_pairs, function(pair) {
+  
+  paired_data <- nm_extended %>%
+    filter(predID %in% pair) %>%
+    select(Day, predID, NPOC..mg.C.L.) %>%
+    filter(!is.na(NPOC..mg.C.L.)) %>% 
+    group_by(Day, predID) %>%
+    slice_head(n = 1) %>% 
+    summarise(NPOC..mg.C.L. = mean(NPOC..mg.C.L., na.rm = TRUE), .groups = "drop") %>%  # average duplicates
+    pivot_wider(names_from = predID, values_from = NPOC..mg.C.L.) %>%
+    drop_na()
+  
+  
+  # Skip pairs with too few shared dates
+  if (nrow(paired_data) < 2) {
+    return(data.frame(site_x = pair[1], site_y = pair[2], synchrony = NA))
+  }
+  
+  data.frame(
+    site_x    = pair[1],
+    site_y    = pair[2],
+    synchrony = synchrony(paired_data[[pair[1]]], paired_data[[pair[2]]])
+  )
+})
+
+results_nmext <- bind_rows(results)
+results_nmext <- na.omit(results_nmext)
+
+# NM TDN 
+# Loop over each pair and calculate synchrony for one variable
+nresults <- lapply(nm_site_pairs, function(pair) {
+  
+  paired_data <- nm_extended %>%
+    filter(predID %in% pair) %>%
+    select(Day, predID, TDN..mg.N.L.) %>%
+    filter(!is.na(TDN..mg.N.L.)) %>% 
+    group_by(Day, predID) %>%
+    slice_head(n = 1) %>% 
+    summarise(TDN..mg.N.L. = mean(TDN..mg.N.L., na.rm = TRUE), .groups = "drop") %>%  # average duplicates
+    pivot_wider(names_from = predID, values_from = TDN..mg.N.L.) %>%
+    drop_na()
+  
+  
+  # Skip pairs with too few shared dates
+  if (nrow(paired_data) < 2) {
+    return(data.frame(site_x = pair[1], site_y = pair[2], synchrony = NA))
+  }
+  
+  data.frame(
+    site_x    = pair[1],
+    site_y    = pair[2],
+    synchrony = synchrony(paired_data[[pair[1]]], paired_data[[pair[2]]])
+  )
+})
+
+nresults_nmext <- bind_rows(nresults)
+nresults_nmext <- na.omit(nresults_nmext)
+
+# BR NPOC
+# Loop over each pair and calculate synchrony for one variable
+results <- lapply(br_site_pairs, function(pair) {
+  
+  paired_data <- br_extended %>%
+    filter(predID %in% pair) %>%
+    select(Day, predID, NPOC..mg.C.L.) %>%
+    filter(!is.na(NPOC..mg.C.L.)) %>% 
+    group_by(Day, predID) %>%
+    slice_head(n = 1) %>% 
+    summarise(NPOC..mg.C.L. = mean(NPOC..mg.C.L., na.rm = TRUE), .groups = "drop") %>%  # average duplicates
+    pivot_wider(names_from = predID, values_from = NPOC..mg.C.L.) %>%
+    drop_na()
+  
+  
+  # Skip pairs with too few shared dates
+  if (nrow(paired_data) < 2) {
+    return(data.frame(site_x = pair[1], site_y = pair[2], synchrony = NA))
+  }
+  
+  data.frame(
+    site_x    = pair[1],
+    site_y    = pair[2],
+    synchrony = synchrony(paired_data[[pair[1]]], paired_data[[pair[2]]])
+  )
+})
+
+results_brext <- bind_rows(results)
+results_brext <- na.omit(results_brext)
+
+# BR TDN 
+# Loop over each pair and calculate synchrony for one variable
+nresults <- lapply(br_site_pairs, function(pair) {
+  
+  paired_data <- br_extended %>%
+    filter(predID %in% pair) %>%
+    select(Day, predID, TDN..mg.N.L.) %>%
+    filter(!is.na(TDN..mg.N.L.)) %>% 
+    group_by(Day, predID) %>%
+    slice_head(n = 1) %>% 
+    summarise(TDN..mg.N.L. = mean(TDN..mg.N.L., na.rm = TRUE), .groups = "drop") %>%  # average duplicates
+    pivot_wider(names_from = predID, values_from = TDN..mg.N.L.) %>%
+    drop_na()
+  
+  
+  # Skip pairs with too few shared dates
+  if (nrow(paired_data) < 2) {
+    return(data.frame(site_x = pair[1], site_y = pair[2], synchrony = NA))
+  }
+  
+  data.frame(
+    site_x    = pair[1],
+    site_y    = pair[2],
+    synchrony = synchrony(paired_data[[pair[1]]], paired_data[[pair[2]]])
+  )
+})
+
+nresults_brext <- bind_rows(nresults)
+nresults_brext <- na.omit(nresults_brext)
+
+# Combine datasets #
+
+
+# Plot comparison #
+
+
+
+#### Comparison between real v. extended dataset - NPOCxTDN per site ####
