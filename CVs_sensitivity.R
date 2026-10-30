@@ -296,14 +296,88 @@ print(allowable_missing)
 
 #### Varying spatial distribution of sites (mainstem vs. tributary) ####
 ## Holds N fixed at actual_n_sites and instead varies where those sites sit in the network: tributary-dominated, uniform (matching the real network's own mainstem:tributary mix), or mainstem-dominated. 
-#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv), split at the median area across the full synthetic population.
+#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv) as >60% of the total watershed area
 
 predpts_attrs      <- read_csv(file.path(data_out_dir, "nm_predpts_attributes.csv"), show_col_types = FALSE)
-mainstem_threshold <- median(predpts_attrs$Area_m2)
 area_lookup        <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
 
 shift_fraction <- 0.99  # how far to move the real network's mainstem fraction toward each extreme
 
+# ---- Explicit, field-relevant area threshold (replaces population median)
+#mainstem_threshold <- 2*1000000  # m^2 (.5 km^2) - tune to whatever scale meaningfully separates mainstem-like from tributary-like reaches here
+total_watershed_area <- max(predpts_attrs$Area_m2)
+mainstem_frac_of_total <- 0.06  # tune
+mainstem_threshold <- mainstem_frac_of_total * total_watershed_area
+
+area_lookup <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
+
+# Real sites' own mainstem fraction, using the FULL (un-thinned) classification --
+# this should reflect what the real network actually looks like, not the thinned pool
+real_is_mainstem <- area_lookup[real_predids] >= mainstem_threshold
+p_real <- mean(real_is_mainstem)
+
+# ---- Nearest-neighbor spacing, to help choose a minimum separation distance
+nn_dist_mat <- as.matrix(dist(predpts_attrs[, c("X", "Y")]))
+diag(nn_dist_mat) <- NA
+print(summary(apply(nn_dist_mat, 1, min, na.rm = TRUE)))
+
+min_separation_mainstem_m <- 400
+min_separation_trib_m     <- 400   # more spacing between tributary points
+
+mainstem_predids_thin <- decluster_points(mainstem_predids_pool, predpts_attrs, min_separation_mainstem_m, seed = 1)
+trib_predids_thin     <- decluster_points(trib_predids_pool,     predpts_attrs, min_separation_trib_m,     seed = 2)
+
+# ---- Decluster: thin each group to mutually separated points
+decluster_points <- function(predids, coords_lookup, min_dist, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  pts <- coords_lookup %>% filter(predID %in% predids)
+  keep <- character(0)
+  remaining <- pts
+  while (nrow(remaining) > 0) {
+    pick <- remaining[sample(nrow(remaining), 1), ]
+    keep <- c(keep, pick$predID)
+    d <- sqrt((remaining$X - pick$X)^2 + (remaining$Y - pick$Y)^2)
+    remaining <- remaining[d >= min_dist, ]
+  }
+  keep
+}
+
+is_mainstem_all <- area_lookup >= mainstem_threshold
+mainstem_predids_pool <- names(area_lookup)[is_mainstem_all]
+trib_predids_pool     <- names(area_lookup)[!is_mainstem_all]
+
+mainstem_predids_thin <- decluster_points(mainstem_predids_pool, predpts_attrs, min_separation_mainstem_m, seed = 1)
+trib_predids_thin     <- decluster_points(trib_predids_pool,     predpts_attrs, min_separation_trib_m, seed = 2)
+
+cat("Mainstem pool:", length(mainstem_predids_pool), "-> thinned to", length(mainstem_predids_thin), "\n")
+cat("Tributary pool:", length(trib_predids_pool), "-> thinned to", length(trib_predids_thin), "\n")
+cat("Need at least", actual_n_sites, "candidates available in the more restrictive pool.\n")
+
+# ---- Simple map of the mainstem/tributary sampling pools
+predpts_attrs <- predpts_attrs %>%
+  mutate(
+    Group = case_when(
+      predID %in% mainstem_predids_thin ~ "Mainstem (sampling pool)",
+      predID %in% trib_predids_thin     ~ "Tributary (sampling pool)",
+      is_mainstem_all[predID]           ~ "Mainstem (thinned out)",
+      TRUE                               ~ "Tributary (thinned out)"
+    )
+  )
+p_network_map <- ggplot(predpts_attrs, aes(x = X, y = Y, color = Group)) +
+  geom_point(size = 1.8, alpha = 0.8) +
+  coord_equal() +
+  scale_color_manual(values = c(
+    "Mainstem (sampling pool)"  = "red",
+    "Tributary (sampling pool)" = "orange",
+    "Mainstem (thinned out)"    = "grey",
+    "Tributary (thinned out)"   = "#2e86c1"
+  )) +
+  labs(title = paste0(toupper("nm"), ": mainstem/tributary sampling pools"),
+       x = NULL, y = NULL, color = NULL) +
+  theme_minimal()
+p_network_map
+
+# per-constituent loop
 distribution_mc_results_list <- list()
 for (cc in constituents) {
   fs      <- field_setups[[cc]]
@@ -311,12 +385,11 @@ for (cc in constituents) {
   mu_cond <- fs$setup$mu_cond
   L_space <- fs$setup$L_space
   
-  ## Area for each of the m predpts, in the same P1..Pm order mu_cond/L_space
-  ## use (predID already confirmed to follow this exact sequential format).
+  ## Area for each of the m predpts
   area_by_pred <- area_lookup[paste0("P", seq_len(m))]
   is_mainstem  <- area_by_pred >= mainstem_threshold
-  mainstem_idx <- which(is_mainstem)
-  trib_idx     <- which(!is_mainstem)
+  mainstem_idx <- match(mainstem_predids_thin, paste0("P", seq_len(m)))
+  trib_idx     <- match(trib_predids_thin,     paste0("P", seq_len(m)))
   
   ## The real network's own mix, under this same area threshold.
   p_real <- mean(is_mainstem[real_predids])
@@ -662,14 +735,88 @@ print(allowable_missing)
 
 #### Varying spatial distribution of sites (mainstem vs. tributary) ####
 ## Holds N fixed at actual_n_sites and instead varies where those sites sit in the network: tributary-dominated, uniform (matching the real network's own mainstem:tributary mix), or mainstem-dominated. 
-#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv), split at the median area across the full synthetic population.
+#"Mainstem-like" is defined by drainage area (Area_m2, from *_predpts_attributes.csv) as >60% of the total watershed area
 
-predpts_attrs      <- read_csv(file.path(data_out_dir, "br_predpts_attributes_br.csv"), show_col_types = FALSE)
-mainstem_threshold <- median(predpts_attrs$Area_m2)
+predpts_attrs      <- read_csv(file.path(data_out_dir, "br_predpts_attributes.csv"), show_col_types = FALSE)
 area_lookup        <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
 
 shift_fraction <- 0.99  # how far to move the real network's mainstem fraction toward each extreme
 
+# ---- Explicit, field-relevant area threshold (replaces population median)
+#mainstem_threshold <- 2*1000000  # m^2 (.5 km^2) - tune to whatever scale meaningfully separates mainstem-like from tributary-like reaches here
+total_watershed_area <- max(predpts_attrs$Area_m2)
+mainstem_frac_of_total <- 0.06  # tune
+mainstem_threshold <- mainstem_frac_of_total * total_watershed_area
+
+area_lookup <- setNames(predpts_attrs$Area_m2, predpts_attrs$predID)
+
+# Real sites' own mainstem fraction, using the FULL (un-thinned) classification --
+# this should reflect what the real network actually looks like, not the thinned pool
+real_is_mainstem <- area_lookup[real_predids] >= mainstem_threshold
+p_real <- mean(real_is_mainstem)
+
+# ---- Nearest-neighbor spacing, to help choose a minimum separation distance
+nn_dist_mat <- as.matrix(dist(predpts_attrs[, c("X", "Y")]))
+diag(nn_dist_mat) <- NA
+print(summary(apply(nn_dist_mat, 1, min, na.rm = TRUE)))
+
+min_separation_mainstem_m <- 400
+min_separation_trib_m     <- 400   # more spacing between tributary points
+
+mainstem_predids_thin <- decluster_points(mainstem_predids_pool, predpts_attrs, min_separation_mainstem_m, seed = 1)
+trib_predids_thin     <- decluster_points(trib_predids_pool,     predpts_attrs, min_separation_trib_m,     seed = 2)
+
+# ---- Decluster: thin each group to mutually separated points
+decluster_points <- function(predids, coords_lookup, min_dist, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  pts <- coords_lookup %>% filter(predID %in% predids)
+  keep <- character(0)
+  remaining <- pts
+  while (nrow(remaining) > 0) {
+    pick <- remaining[sample(nrow(remaining), 1), ]
+    keep <- c(keep, pick$predID)
+    d <- sqrt((remaining$X - pick$X)^2 + (remaining$Y - pick$Y)^2)
+    remaining <- remaining[d >= min_dist, ]
+  }
+  keep
+}
+
+is_mainstem_all <- area_lookup >= mainstem_threshold
+mainstem_predids_pool <- names(area_lookup)[is_mainstem_all]
+trib_predids_pool     <- names(area_lookup)[!is_mainstem_all]
+
+mainstem_predids_thin <- decluster_points(mainstem_predids_pool, predpts_attrs, min_separation_mainstem_m, seed = 1)
+trib_predids_thin     <- decluster_points(trib_predids_pool,     predpts_attrs, min_separation_trib_m, seed = 2)
+
+cat("Mainstem pool:", length(mainstem_predids_pool), "-> thinned to", length(mainstem_predids_thin), "\n")
+cat("Tributary pool:", length(trib_predids_pool), "-> thinned to", length(trib_predids_thin), "\n")
+cat("Need at least", actual_n_sites, "candidates available in the more restrictive pool.\n")
+
+# ---- Simple map of the mainstem/tributary sampling pools
+predpts_attrs <- predpts_attrs %>%
+  mutate(
+    Group = case_when(
+      predID %in% mainstem_predids_thin ~ "Mainstem (sampling pool)",
+      predID %in% trib_predids_thin     ~ "Tributary (sampling pool)",
+      is_mainstem_all[predID]           ~ "Mainstem (thinned out)",
+      TRUE                               ~ "Tributary (thinned out)"
+    )
+  )
+p_network_map <- ggplot(predpts_attrs, aes(x = X, y = Y, color = Group)) +
+  geom_point(size = 1.8, alpha = 0.8) +
+  coord_equal() +
+  scale_color_manual(values = c(
+    "Mainstem (sampling pool)"  = "red",
+    "Tributary (sampling pool)" = "orange",
+    "Mainstem (thinned out)"    = "grey",
+    "Tributary (thinned out)"   = "#2e86c1"
+  )) +
+  labs(title = paste0(toupper("br"), ": mainstem/tributary sampling pools"),
+       x = NULL, y = NULL, color = NULL) +
+  theme_minimal()
+p_network_map
+
+# per-constituent loop
 distribution_mc_results_list <- list()
 for (cc in constituents) {
   fs      <- field_setups[[cc]]
@@ -677,12 +824,11 @@ for (cc in constituents) {
   mu_cond <- fs$setup$mu_cond
   L_space <- fs$setup$L_space
   
-  ## Area for each of the m predpts, in the same P1..Pm order mu_cond/L_space
-  ## use (predID already confirmed to follow this exact sequential format).
+  ## Area for each of the m predpts
   area_by_pred <- area_lookup[paste0("P", seq_len(m))]
   is_mainstem  <- area_by_pred >= mainstem_threshold
-  mainstem_idx <- which(is_mainstem)
-  trib_idx     <- which(!is_mainstem)
+  mainstem_idx <- match(mainstem_predids_thin, paste0("P", seq_len(m)))
+  trib_idx     <- match(trib_predids_thin,     paste0("P", seq_len(m)))
   
   ## The real network's own mix, under this same area threshold.
   p_real <- mean(is_mainstem[real_predids])

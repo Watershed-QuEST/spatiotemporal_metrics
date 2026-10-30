@@ -124,9 +124,12 @@ write_csv(clean, file.path(data_out_dir, "nm_clean.csv"))
 ssn_object <- readRDS(file.path(data_out_dir, "ssn_objects.rds"))[[project]]
 
 ## Export each predpt's drainage area / flow-accumulation position, for use in downstream sampling-design analyses
-predpts_attributes <- ssn_object$preds$predpts %>%
+predpts_sf <- ssn_object$preds$predpts
+coords <- sf::st_coordinates(predpts_sf)
+predpts_attributes <- predpts_sf %>%
   sf::st_drop_geometry() %>%
-  select(predID, Area_m2, logArea, afvFlow, upDist)
+  select(predID, Area_m2, logArea, afvFlow, upDist) %>%
+  mutate(X = coords[, 1], Y = coords[, 2])
 write_csv(predpts_attributes, file.path(data_out_dir, paste0(project, "_predpts_attributes.csv")))
 
 ## ssn_lm() reads its response/predictor columns directly from ssn.object$obs, so the cleaned data needs to be pivoted (one column per CampaignID per constituent) and joined onto that sf object.
@@ -796,10 +799,13 @@ write_csv(clean, file.path(data_out_dir, "br_clean.csv"))
 ssn_object <- readRDS(file.path(data_out_dir, "ssn_objects_br.rds"))[[project]]
 
 ## Export each predpt's drainage area / flow-accumulation position, for use in downstream sampling-design analyses
-predpts_attributes <- ssn_object$preds$predpts %>%
+predpts_sf <- ssn_object$preds$predpts
+coords <- sf::st_coordinates(predpts_sf)
+predpts_attributes <- predpts_sf %>%
   sf::st_drop_geometry() %>%
-  select(predID, Area_m2, logArea, afvFlow, upDist)
-write_csv(predpts_attributes, file.path(data_out_dir, paste0(project, "_predpts_attributes_br.csv")))
+  select(predID, Area_m2, logArea, afvFlow, upDist) %>%
+  mutate(X = coords[, 1], Y = coords[, 2])
+write_csv(predpts_attributes, file.path(data_out_dir, paste0(project, "_predpts_attributes.csv")))
 
 ## ssn_lm() reads its response/predictor columns directly from ssn.object$obs, so the cleaned data needs to be pivoted (one column per CampaignID per constituent) and joined onto that sf object.
 wide <- clean %>%
