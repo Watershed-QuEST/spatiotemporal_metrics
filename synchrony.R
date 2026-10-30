@@ -31,11 +31,9 @@ data_out_dir <- "data"
 plot_dir     <- "plots"
 
 nm_toy           <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
-nm_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.csv"), show_col_types = FALSE)
 nm_field_setups     <- readRDS(file.path(data_out_dir, "nm_field_setups.rds"))
 
 br_toy           <- read_csv(file.path(data_out_dir, "br_clean.csv"), show_col_types = FALSE)
-br_extended <- read_csv(file.path(data_out_dir, "br_synthetic_extended.csv"), show_col_types = FALSE)
 br_field_setups     <- readRDS(file.path(data_out_dir, "br_field_setups.rds"))
 
 # Monte Carlo iterations
@@ -1062,65 +1060,41 @@ ggsave(file.path(plot_dir, "synchrony_MC_plot_br.png"), p_sync, width = 10, heig
 ###############################
 #### Demonstration Figures ####
 ###############################
-#### Comparison between real v. extended dataset - pairwise sites ####
-# Configure extended data #
-# nm_extended <- nm_extended %>%
-#   pivot_wider(names_from = Constituent, values_from = Conc)
-# 
-# br_extended <- br_extended %>%
-#   pivot_wider(names_from = Constituent, values_from = Conc)
+#### Pairwise sites - extended dataset ####
+# Configure extended data -nm
+nm_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_with_real.csv"), show_col_types = FALSE)
+nm_synthetic_extended_site_id <- nm_extended %>% filter(Source == "real")
+nm_synthetic_extended_site_ids <- c(unique(nm_synthetic_extended_site_id$predID))
+nm_extended_real <- nm_extended %>% filter(predID %in% nm_synthetic_extended_site_ids)
 
-### Load data
-# chem data from synthetically extended data to use real sites but extend to 20 campaigns
-# nm
-extended_nm            <- read_csv(file.path(data_out_dir, "nm_synthetic_with_real.csv"), show_col_types = FALSE)
-# the predpts that actually have a real-data equivalent -- these are "the real sites"
-real_predIDs_nm <- extended_nm %>%
-  filter(Source == "real") %>%
-  distinct(predID) %>%
-  pull(predID)
-# 20 consecutive campaigns, beginning at the first campaign with real data
-start_campaign_nm <- extended_nm %>%
-  filter(Source == "real") %>%
-  pull(CampaignNum) %>%
-  min()
-campaign_range_nm <- start_campaign_nm:(start_campaign_nm + 19)
-real_sites_extended_nm <- extended_nm %>%
-  filter(predID %in% real_predIDs_nm, CampaignNum %in% campaign_range_nm)
-# br
-extended_br            <- read_csv(file.path(data_out_dir, "br_synthetic_with_real.csv"), show_col_types = FALSE)
-extended <- bind_rows(extended_nm, extended_br)
-# the predpts that actually have a real-data equivalent -- these are "the real sites"
-real_predIDs_br <- extended_br %>%
-  filter(Source == "real") %>%
-  distinct(predID) %>%
-  pull(predID)
-# 20 consecutive campaigns, beginning at the first campaign with real data
-start_campaign_br <- extended_br %>%
-  filter(Source == "real") %>%
-  pull(CampaignNum) %>%
-  min()
-campaign_range_br <- start_campaign_br:(start_campaign_br + 19)
-real_sites_extended_br <- extended_br %>%
-  filter(predID %in% real_predIDs_br, CampaignNum %in% campaign_range_br)
+nm_extended_realwide <- nm_extended_real %>%
+  pivot_wider(names_from = Constituent, values_from = Conc)
 
-# combine
-real_sites_extended = bind_rows(real_sites_extended_br, real_sites_extended_nm)
-# pivot
-real_sites_extended_wide <- real_sites_extended %>%
-  pivot_wider(
-    names_from  = Constituent,
-    values_from = c(Conc, Source)
-  )
-real_sites_extended_wide <- real_sites_extended_wide %>%
-  rename_with(~ str_remove(., "\\.\\.mg\\..*$"))
+nm_extended_sites <- nm_extended_realwide %>%
+  pull(predID) %>%
+  unique()
+nm_extended_site_pairs <- combn(nm_extended_sites, 2, simplify = FALSE)
+
+#Configure extended data -br
+br_extended <- read_csv(file.path(data_out_dir, "br_synthetic_with_real.csv"), show_col_types = FALSE)
+br_synthetic_extended_site_id <- br_extended %>% filter(Source == "real")
+br_synthetic_extended_site_ids <- c(unique(br_synthetic_extended_site_id$predID))
+br_extended_real <- br_extended %>% filter(predID %in% br_synthetic_extended_site_ids)
+
+br_extended_realwide <- br_extended_real %>%
+  pivot_wider(names_from = Constituent, values_from = Conc)
+
+br_extended_sites <- br_extended_realwide %>%
+  pull(predID) %>%
+  unique()
+br_extended_site_pairs <- combn(br_extended_sites, 2, simplify = FALSE)
 
 #Generate results for extended data #
 # NM NPOC
 # Loop over each pair and calculate synchrony for one variable
-results <- lapply(nm_site_pairs, function(pair) {
+results <- lapply(nm_extended_site_pairs, function(pair) {
   
-  paired_data <- nm_extended %>%
+  paired_data <- nm_extended_realwide %>%
     filter(predID %in% pair) %>%
     select(Day, predID, NPOC..mg.C.L.) %>%
     filter(!is.na(NPOC..mg.C.L.)) %>% 
@@ -1147,10 +1121,9 @@ results_nmext <- bind_rows(results)
 results_nmext <- na.omit(results_nmext)
 
 # NM TDN 
-# Loop over each pair and calculate synchrony for one variable
-nresults <- lapply(nm_site_pairs, function(pair) {
+nresults <- lapply(nm_extended_site_pairs, function(pair) {
   
-  paired_data <- nm_extended %>%
+  paired_data <- nm_extended_realwide %>%
     filter(predID %in% pair) %>%
     select(Day, predID, TDN..mg.N.L.) %>%
     filter(!is.na(TDN..mg.N.L.)) %>% 
@@ -1177,10 +1150,9 @@ nresults_nmext <- bind_rows(nresults)
 nresults_nmext <- na.omit(nresults_nmext)
 
 # BR NPOC
-# Loop over each pair and calculate synchrony for one variable
-results <- lapply(br_site_pairs, function(pair) {
+results <- lapply(br_extended_site_pairs, function(pair) {
   
-  paired_data <- br_extended %>%
+  paired_data <- br_extended_realwide %>%
     filter(predID %in% pair) %>%
     select(Day, predID, NPOC..mg.C.L.) %>%
     filter(!is.na(NPOC..mg.C.L.)) %>% 
@@ -1208,9 +1180,9 @@ results_brext <- na.omit(results_brext)
 
 # BR TDN 
 # Loop over each pair and calculate synchrony for one variable
-nresults <- lapply(br_site_pairs, function(pair) {
+nresults <- lapply(br_extended_site_pairs, function(pair) {
   
-  paired_data <- br_extended %>%
+  paired_data <- br_extended_realwide %>%
     filter(predID %in% pair) %>%
     select(Day, predID, TDN..mg.N.L.) %>%
     filter(!is.na(TDN..mg.N.L.)) %>% 
@@ -1237,10 +1209,21 @@ nresults_brext <- bind_rows(nresults)
 nresults_brext <- na.omit(nresults_brext)
 
 # Combine datasets #
+synchrony_all_ext <- bind_rows(
+  results_nmext  %>% mutate(watershed = "nm", variable = "NPOC"),
+  nresults_nmext %>% mutate(watershed = "nm", variable = "TDN"),
+  results_brext  %>% mutate(watershed = "br", variable = "NPOC"),
+  nresults_brext %>% mutate(watershed = "br", variable = "TDN")
+) %>%
+  select(watershed, variable, site_x, site_y, synchrony)
+
+#### Plot pairwise comparison ####
+# using synchrony_all_next, plot violin plots of synchrony from both catchments for NPOC and TDN 
+# compare with helper functions if possible, would become two panels for each variable
+sync_ext <-ggplot(synchrony_all_ext, mapping=aes(x=variable, y=synchrony)) +
+  geom_violin() + 
+  geom_jitter(height = 0, width = 0.1, aes(colour = factor(watershed)))
 
 
-# Plot comparison #
+#### NPOCxTDN per site - extended dataset ####
 
-
-
-#### Comparison between real v. extended dataset - NPOCxTDN per site ####
