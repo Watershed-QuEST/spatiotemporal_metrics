@@ -1220,9 +1220,11 @@ synchrony_all_ext <- bind_rows(
 #### Plot pairwise comparison ####
 # using synchrony_all_next, plot violin plots of synchrony from both catchments for NPOC and TDN 
 # compare with helper functions if possible, would become two panels for each variable
-sync_ext <-ggplot(synchrony_all_ext, mapping=aes(x=variable, y=synchrony)) +
+sync_ext <-ggplot(synchrony_all_ext, mapping=aes(x=watershed, y=synchrony)) +
   geom_violin() + 
-  geom_jitter(height = 0, width = 0.1, aes(colour = factor(watershed)))
+  geom_jitter(height = 0, width = 0.1, aes(colour = factor(variable))) +
+  labs(y= "Synchrony", x="Watershed") +
+  ylim(-1,1)
 
 
 #### NPOCxTDN per site - extended dataset ####
