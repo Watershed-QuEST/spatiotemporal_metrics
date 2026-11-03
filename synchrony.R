@@ -32,9 +32,11 @@ plot_dir     <- "plots"
 
 nm_toy           <- read_csv(file.path(data_out_dir, "nm_clean.csv"), show_col_types = FALSE)
 nm_field_setups     <- readRDS(file.path(data_out_dir, "nm_field_setups.rds"))
+nm_toy_extended <- read_csv(file.path(data_out_dir, "nm_synthetic_extended.csv"), show_col_types = FALSE)
 
 br_toy           <- read_csv(file.path(data_out_dir, "br_clean.csv"), show_col_types = FALSE)
 br_field_setups     <- readRDS(file.path(data_out_dir, "br_field_setups.rds"))
+br_toy_extended <- read_csv(file.path(data_out_dir, "br_synthetic_extended.csv"), show_col_types = FALSE)
 
 # Monte Carlo iterations
 n_iter    <- 10000 
@@ -852,7 +854,7 @@ write_csv(sync_mc_summary, file.path(data_out_dir, "synchrony_MC_summary.csv"))
 # contain actual_n_campaigns exactly, since counts below 3 are dropped)
 bias_annot <- sync_mc_summary %>%
   group_by(Metric) %>%
-  slice_min(abs(N - actual_n_campaigns), n = 1, with_ties = FALSE) %>%
+  slice_min(abs(N - actual_n_campaigns_nm), n = 1, with_ties = FALSE) %>%
   ungroup() %>%
   mutate(label = sprintf("At N=%d: %+.2f bias", N, Bias))
 
@@ -860,13 +862,13 @@ p_sync <- ggplot(sync_mc_summary, aes(x = N, y = Median_Sync)) +
   geom_ribbon(aes(ymin = P05_Sync, ymax = P95_Sync), fill = "grey70", alpha = 0.5) +
   geom_line() + geom_point(size = 1.5) +
   geom_hline(aes(yintercept = Ref_Sync), color = "blue", linetype = "dashed") +
-  geom_vline(xintercept = actual_n_campaigns, color = "red", linetype = "dashed") +
+  geom_vline(xintercept = actual_n_campaigns_nm, color = "red", linetype = "dashed") +
   geom_text(data = bias_annot, aes(x = Inf, y = Inf, label = label),
             hjust = 1.1, vjust = 1.5, size = 3.5, color = "red", inherit.aes = FALSE) +
   facet_wrap(~ Metric, scales = "free_y", ncol = 3) +
   labs(x = "Sample size (N campaigns)", y = "Synchrony (median, 5th-95th pct band)",
        title = "Temporal sample-size sensitivity of NM synchrony",
-       subtitle = "Blue = reference synchrony (static extended dataset, all 60 synthetic months); red = actual sample size, annotated with bias at the nearest tested N. Each Monte Carlo iteration redraws a fresh spatiotemporal field, campaign times drawn at random across a 5-year span.") +
+       subtitle = "Blue = reference synchrony (static extended dataset, all 60 synthetic months); red = actual sample size.") +
   theme_bw()
 
 print(p_sync)
@@ -1037,7 +1039,7 @@ write_csv(sync_mc_summary, file.path(data_out_dir, "synchrony_MC_summary_br.csv"
 # contain actual_n_campaigns exactly, since counts below 3 are dropped)
 bias_annot <- sync_mc_summary %>%
   group_by(Metric) %>%
-  slice_min(abs(N - actual_n_campaigns), n = 1, with_ties = FALSE) %>%
+  slice_min(abs(N - actual_n_campaigns_br), n = 1, with_ties = FALSE) %>%
   ungroup() %>%
   mutate(label = sprintf("At N=%d: %+.2f bias", N, Bias))
 
@@ -1045,13 +1047,13 @@ p_sync <- ggplot(sync_mc_summary, aes(x = N, y = Median_Sync)) +
   geom_ribbon(aes(ymin = P05_Sync, ymax = P95_Sync), fill = "grey70", alpha = 0.5) +
   geom_line() + geom_point(size = 1.5) +
   geom_hline(aes(yintercept = Ref_Sync), color = "blue", linetype = "dashed") +
-  geom_vline(xintercept = actual_n_campaigns, color = "red", linetype = "dashed") +
+  geom_vline(xintercept = actual_n_campaigns_br, color = "red", linetype = "dashed") +
   geom_text(data = bias_annot, aes(x = Inf, y = Inf, label = label),
             hjust = 1.1, vjust = 1.5, size = 3.5, color = "red", inherit.aes = FALSE) +
   facet_wrap(~ Metric, scales = "free_y", ncol = 3) +
   labs(x = "Sample size (N campaigns)", y = "Synchrony (median, 5th-95th pct band)",
        title = "Temporal sample-size sensitivity of BR synchrony",
-       subtitle = "Blue = reference synchrony (static extended dataset, all 60 synthetic months); red = actual sample size, annotated with bias at the nearest tested N. Each Monte Carlo iteration redraws a fresh spatiotemporal field, campaign times drawn at random across a 5-year span.") +
+       subtitle = "Blue = reference synchrony (static extended dataset, all 60 synthetic months); red = actual sample size.") +
   theme_bw()
 
 print(p_sync)
