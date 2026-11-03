@@ -53,11 +53,17 @@ actual_n_campaigns_br <- n_distinct(br_toy$CampaignID)
 set.seed(42)
 
 #### Temporal synchrony function ####
-synchrony <- function(x, y) {
+synchrony <- function(x, y, method = c("pearson", "spearman")) {
+  method <- match.arg(method)
   n <- length(x)
   
   if (length(x) != length(y)) stop("x and y must have the same length")
   if (n < 2) stop("Need at least 2 observations")
+  
+  if (method == "spearman") {
+    x <- rank(x)
+    y <- rank(y)
+  }
   
   sum((x - mean(x)) * (y - mean(y))) / ((n - 1) * sd(x) * sd(y))
 }
@@ -209,6 +215,7 @@ synchrony_all <- bind_rows(
   nresults_br %>% mutate(watershed = "br", variable = "TDN")
 ) %>%
   select(watershed, variable, site_x, site_y, synchrony)
+
 
 #### Synchrony between two variables (NPOC and TDN) at one site ####
 # NM #
@@ -541,6 +548,9 @@ p5 <- ggplot(results_nm_area, aes(x = Site, y = synchrony)) +
   )
 print(p5)
 
+ggsave(file.path(plot_dir, "syncplot_byarea_nm.png"), p5, width = 10, height = 4, dpi = 150)
+
+
 ## BR TDN//DOC Synchrony by watershed area ##
 # Join area and order sites by increasing watershed area
 results_br_area <- cnresults_br %>%
@@ -570,7 +580,7 @@ p6 <- ggplot(results_br_area, aes(x = Site, y = synchrony)) +
   )
 print(p6)
 
-
+ggsave(file.path(plot_dir, "syncplot_byarea_br.png"), p6, width = 10, height = 4, dpi = 150)
 
 
 ########## Testing the package function!!! ############
@@ -1222,12 +1232,176 @@ synchrony_all_ext <- bind_rows(
 #### Plot pairwise comparison ####
 # using synchrony_all_next, plot violin plots of synchrony from both catchments for NPOC and TDN 
 # compare with helper functions if possible, would become two panels for each variable
-sync_ext <-ggplot(synchrony_all_ext, mapping=aes(x=watershed, y=synchrony)) +
-  geom_violin() + 
-  geom_jitter(height = 0, width = 0.1, aes(colour = factor(variable))) +
-  labs(y= "Synchrony", x="Watershed") +
-  ylim(-1,1)
+sync_ext <- ggplot(synchrony_all_ext, mapping = aes(x = variable, y = synchrony)) +
+  geom_violin() +
+  geom_jitter(height = 0, width = 0.1, aes(colour = watershed),
+              size = 0.8, alpha = 0.7) +
+  labs(y = "Synchrony", x = NULL,
+       title = "Distribution of Pairwise Synchrony",
+       subtitle = "Each point represents synchrony calculated between two sites within a watershed") +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+ggsave(file.path(plot_dir, "synchrony_demo.png"), sync_ext, width = 6.5, height = 5, dpi = 150)
 
 
-#### NPOCxTDN per site - extended dataset ####
+#### Pearson v. spearman ####
+# synchrony calculation with spearman
+results <- lapply(nm_extended_site_pairs, function(pair) {
+  
+  paired_data <- nm_extended_realwide %>%
+    filter(predID %in% pair) %>%
+    select(Day, predID, NPOC..mg.C.L.) %>%
+    filter(!is.na(NPOC..mg.C.L.)) %>% 
+    group_by(Day, predID) %>%
+    slice_head(n = 1) %>% 
+    summarise(NPOC..mg.C.L. = mean(NPOC..mg.C.L., na.rm = TRUE), .groups = "drop") %>%  # average duplicates
+    pivot_wider(names_from = predID, values_from = NPOC..mg.C.L.) %>%
+    drop_na()
+  
+  
+  # Skip pairs with too few shared dates
+  if (nrow(paired_data) < 2) {
+    return(data.frame(site_x = pair[1], site_y = pair[2], synchrony = NA))
+  }
+  
+  data.frame(
+    site_x    = pair[1],
+    site_y    = pair[2],
+    synchrony = synchrony(paired_data[[pair[1]]], paired_data[[pair[2]]],
+                          method = "spearman")
+  )
+})
 
+results_nmext <- bind_rows(results)
+results_nmext <- na.omit(results_nmext)
+
+# NM TDN 
+nresults <- lapply(nm_extended_site_pairs, function(pair) {
+  
+  paired_data <- nm_extended_realwide %>%
+    filter(predID %in% pair) %>%
+    select(Day, predID, TDN..mg.N.L.) %>%
+    filter(!is.na(TDN..mg.N.L.)) %>% 
+    group_by(Day, predID) %>%
+    slice_head(n = 1) %>% 
+    summarise(TDN..mg.N.L. = mean(TDN..mg.N.L., na.rm = TRUE), .groups = "drop") %>%  # average duplicates
+    pivot_wider(names_from = predID, values_from = TDN..mg.N.L.) %>%
+    drop_na()
+  
+  
+  # Skip pairs with too few shared dates
+  if (nrow(paired_data) < 2) {
+    return(data.frame(site_x = pair[1], site_y = pair[2], synchrony = NA))
+  }
+  
+  data.frame(
+    site_x    = pair[1],
+    site_y    = pair[2],
+    synchrony = synchrony(paired_data[[pair[1]]], paired_data[[pair[2]]],
+                          method = "spearman")
+  )
+})
+
+nresults_nmext <- bind_rows(nresults)
+nresults_nmext <- na.omit(nresults_nmext)
+
+# BR NPOC
+results <- lapply(br_extended_site_pairs, function(pair) {
+  
+  paired_data <- br_extended_realwide %>%
+    filter(predID %in% pair) %>%
+    select(Day, predID, NPOC..mg.C.L.) %>%
+    filter(!is.na(NPOC..mg.C.L.)) %>% 
+    group_by(Day, predID) %>%
+    slice_head(n = 1) %>% 
+    summarise(NPOC..mg.C.L. = mean(NPOC..mg.C.L., na.rm = TRUE), .groups = "drop") %>%  # average duplicates
+    pivot_wider(names_from = predID, values_from = NPOC..mg.C.L.) %>%
+    drop_na()
+  
+  
+  # Skip pairs with too few shared dates
+  if (nrow(paired_data) < 2) {
+    return(data.frame(site_x = pair[1], site_y = pair[2], synchrony = NA))
+  }
+  
+  data.frame(
+    site_x    = pair[1],
+    site_y    = pair[2],
+    synchrony = synchrony(paired_data[[pair[1]]], paired_data[[pair[2]]],
+                          method = "spearman")
+  )
+})
+
+results_brext <- bind_rows(results)
+results_brext <- na.omit(results_brext)
+
+# BR TDN 
+# Loop over each pair and calculate synchrony for one variable
+nresults <- lapply(br_extended_site_pairs, function(pair) {
+  
+  paired_data <- br_extended_realwide %>%
+    filter(predID %in% pair) %>%
+    select(Day, predID, TDN..mg.N.L.) %>%
+    filter(!is.na(TDN..mg.N.L.)) %>% 
+    group_by(Day, predID) %>%
+    slice_head(n = 1) %>% 
+    summarise(TDN..mg.N.L. = mean(TDN..mg.N.L., na.rm = TRUE), .groups = "drop") %>%  # average duplicates
+    pivot_wider(names_from = predID, values_from = TDN..mg.N.L.) %>%
+    drop_na()
+  
+  
+  # Skip pairs with too few shared dates
+  if (nrow(paired_data) < 2) {
+    return(data.frame(site_x = pair[1], site_y = pair[2], synchrony = NA))
+  }
+  
+  data.frame(
+    site_x    = pair[1],
+    site_y    = pair[2],
+    synchrony = synchrony(paired_data[[pair[1]]], paired_data[[pair[2]]],
+                          method = "spearman")
+  )
+})
+
+nresults_brext <- bind_rows(nresults)
+nresults_brext <- na.omit(nresults_brext)
+
+# Combine datasets #
+synchrony_all_ext_spearman <- bind_rows(
+  results_nmext  %>% mutate(watershed = "nm", variable = "NPOC"),
+  nresults_nmext %>% mutate(watershed = "nm", variable = "TDN"),
+  results_brext  %>% mutate(watershed = "br", variable = "NPOC"),
+  nresults_brext %>% mutate(watershed = "br", variable = "TDN")
+) %>%
+  select(watershed, variable, site_x, site_y, synchrony)
+
+# compare with synchrony_all_ext
+synchrony_both <- bind_rows(
+  synchrony_all_ext          %>% mutate(method = "pearson"),
+  synchrony_all_ext_spearman %>% mutate(method = "spearman")
+)
+
+sync_wide <- synchrony_both %>%
+  pivot_wider(names_from = method, values_from = synchrony) %>%
+  drop_na(pearson, spearman)
+
+# plot
+p_scatter <- ggplot(sync_wide, aes(x = pearson, y = spearman, colour = watershed)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey40") +
+  geom_point(size = 1.5, alpha = 0.4) +
+  facet_wrap(~ variable) +
+  coord_equal(xlim = c(-1, 1), ylim = c(-1, 1)) +
+  labs(x = "Pearson synchrony", y = "Spearman synchrony",
+       title = "Pearson vs. Spearman Synchrony",
+       subtitle = "Dashed line is 1:1; each point is a site pair") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+sync_wide %>%
+  group_by(watershed, variable) %>%
+  summarise(r = cor(pearson, spearman),
+            mean_diff = mean(spearman - pearson),
+            max_abs_diff = max(abs(spearman - pearson)),
+            .groups = "drop")
