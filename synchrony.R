@@ -868,6 +868,45 @@ bias_annot <- sync_mc_summary %>%
   ungroup() %>%
   mutate(label = sprintf("At N=%d: %+.2f bias", N, Bias))
 
+# Tolerance settings
+bias_tol       <- 10    # percent; acceptable bias vs. reference synchrony
+elbow_fraction <- 0.05  # elbow = marginal gain dropped to this fraction of its steepest value
+
+# Percent bias and percent band width, relative to the reference synchrony
+sync_mc_summary <- sync_mc_summary %>%
+  mutate(Pct_Bias  = Bias / abs(Ref_Sync) * 100,
+         Width_pct = (P95_Sync - P05_Sync) / abs(Ref_Sync) * 100)
+
+## Optimal N by precision elbow and bias tolerance, per synchrony metric
+compute_optimal_n_sync <- function(summary_df) {
+  map_dfr(metric_names, function(mm) {
+    s         <- summary_df %>% filter(Metric == mm) %>% arrange(N)
+    n_vals    <- s$N
+    width_pct <- s$Width_pct
+    
+    # Precision elbow
+    marginal_rate   <- -diff(width_pct) / diff(n_vals)
+    elbow_idx       <- which(marginal_rate <= elbow_fraction * max(marginal_rate))[1]
+    n_opt_precision <- if (is.na(elbow_idx)) NA_real_ else n_vals[elbow_idx + 1]
+    
+    # Smallest N from which bias stays within tolerance
+    within_tol   <- abs(s$Pct_Bias) <= bias_tol
+    stays_within <- sapply(seq_along(within_tol), function(i) all(within_tol[i:length(within_tol)]))
+    bias_idx     <- which(stays_within)[1]
+    n_opt_bias   <- if (is.na(bias_idx)) NA_real_ else n_vals[bias_idx]
+    
+    tibble(Metric = mm,
+           N_optimal_precision = n_opt_precision,
+           N_optimal_bias      = n_opt_bias,
+           N_recommended       = max(n_opt_precision, n_opt_bias, na.rm = TRUE))
+  })
+}
+
+optimal_n_sync <- compute_optimal_n_sync(sync_mc_summary)
+print(optimal_n_sync)
+#write_csv(optimal_n_sync, file.path(data_out_dir, "synchrony_MC_optimal_N.csv"))
+
+# plot
 p_sync <- ggplot(sync_mc_summary, aes(x = N, y = Median_Sync)) +
   geom_ribbon(aes(ymin = P05_Sync, ymax = P95_Sync), fill = "grey70", alpha = 0.5) +
   geom_line() + geom_point(size = 1.5) +
@@ -883,6 +922,10 @@ p_sync <- ggplot(sync_mc_summary, aes(x = N, y = Median_Sync)) +
 
 print(p_sync)
 ggsave(file.path(plot_dir, "synchrony_MC_plot_nm.png"), p_sync, width = 10, height = 4, dpi = 150)
+
+
+
+
 
 #### (BR) Monte Carlo sensitivity analysis: temporal sample size and synchrony ####
 # For three synchrony metrics -- spatial synchrony of NPOC between 2 sites (between-location correlation),
@@ -1034,26 +1077,41 @@ for (n in sync_grid) {
 }
 
 ## Combine, summarize, and plot
-sync_mc_results <- bind_rows(sync_mc_results_list)
+sync_mc_results_br <- bind_rows(sync_mc_results_list)
 
-sync_mc_summary <- sync_mc_results %>%
+sync_mc_summary_br <- sync_mc_results_br %>%
   group_by(Metric, N) %>%
   summarize(Median_Sync = median(Sync), P05_Sync = quantile(Sync, 0.05), P95_Sync = quantile(Sync, 0.95),
             Ref_Sync = first(Ref_Sync), .groups = "drop") %>%
   mutate(Bias = Median_Sync - Ref_Sync)
 
-print(sync_mc_summary, n = Inf)
-write_csv(sync_mc_summary, file.path(data_out_dir, "synchrony_MC_summary_br.csv"))
+print(sync_mc_summary_br, n = Inf)
+write_csv(sync_mc_summary_br, file.path(data_out_dir, "synchrony_MC_summary_br.csv"))
 
 # One row per metric, this analysis's own Bias at the N closest to actual_n_campaigns (sync_grid may not
 # contain actual_n_campaigns exactly, since counts below 3 are dropped)
-bias_annot <- sync_mc_summary %>%
+bias_annot <- sync_mc_summary_br %>%
   group_by(Metric) %>%
   slice_min(abs(N - actual_n_campaigns_br), n = 1, with_ties = FALSE) %>%
   ungroup() %>%
   mutate(label = sprintf("At N=%d: %+.2f bias", N, Bias))
 
-p_sync <- ggplot(sync_mc_summary, aes(x = N, y = Median_Sync)) +
+# Tolerance settings
+bias_tol       <- 10    # percent; acceptable bias vs. reference synchrony
+elbow_fraction <- 0.05  # elbow = marginal gain dropped to this fraction of its steepest value
+
+# Percent bias and percent band width, relative to the reference synchrony
+sync_mc_summary_br <- sync_mc_summary_br %>%
+  mutate(Pct_Bias  = Bias / abs(Ref_Sync) * 100,
+         Width_pct = (P95_Sync - P05_Sync) / abs(Ref_Sync) * 100)
+
+optimal_n_sync_br <- compute_optimal_n_sync(sync_mc_summary_br)
+print(optimal_n_sync_br)
+#write_csv(optimal_n_sync_br, file.path(data_out_dir, "synchrony_MC_optimal_N_br.csv"))
+
+
+
+p_sync <- ggplot(sync_mc_summary_br, aes(x = N, y = Median_Sync)) +
   geom_ribbon(aes(ymin = P05_Sync, ymax = P95_Sync), fill = "grey70", alpha = 0.5) +
   geom_line() + geom_point(size = 1.5) +
   geom_hline(aes(yintercept = Ref_Sync), color = "blue", linetype = "dashed") +
