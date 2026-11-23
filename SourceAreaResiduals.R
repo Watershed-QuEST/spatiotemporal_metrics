@@ -650,8 +650,8 @@ print(model_comparison, width = Inf)
 # SENSITIVITY TEST 1: BACK-TRANSFORM SAR RESIDUALS
 #===============================================================================
 
-# Back-transform observation-level SAR residuals (leads to a mathematical ratio)
-# SAR ratios represent observed mass load / predicted mass load
+# Back-transform (remove from log space) observation-level SAR residuals (leads to a mathematical ratio)
+# by back-transforming, SAR = observed mass load / predicted mass load
 
 sar_cols <- grep(
   "^SAR_",
@@ -733,8 +733,6 @@ ratio_summary <- toy_log %>%
   )
 
 View(ratio_summary)
-
-#XXXXXXX
 
 #===============================================================================
 # SENSITIVITY ANALYSIS: BACK-TRANSFORMED SAR RATIOS
@@ -899,7 +897,7 @@ print(p_AQ_combined)
 
 
 #===============================================================================
-# SENSITIVITY TEST 2: AREA VS. DISCHARGE VS. AREA + DISCHARGE
+# SENSITIVITY TEST 2: AREA VS. DISCHARGE VS. AREA + DISCHARGE MODELS
 #===============================================================================
 
 #-------------------------------------------------------------------------------
@@ -1013,42 +1011,7 @@ sar_pairwise <- bind_rows(
 
 
 #-------------------------------------------------------------------------------
-# 4. CORRELATION AND AGREEMENT BETWEEN MODELS
-#-------------------------------------------------------------------------------
-
-sar_correlation <- sar_pairwise %>%
-  group_by(Project, Solute, Comparison) %>%
-  summarise(
-    
-    n = sum(complete.cases(First_SAR, Second_SAR)),
-    
-    Pearson_r = cor(
-      First_SAR,
-      Second_SAR,
-      method = "pearson",
-      use = "complete.obs"
-    ),
-    
-    Spearman_rho = cor(
-      First_SAR,
-      Second_SAR,
-      method = "spearman",
-      use = "complete.obs"
-    ),
-    
-    Sign_agreement_pct = mean(
-      sign(First_SAR) == sign(Second_SAR),
-      na.rm = TRUE
-    ) * 100,
-    
-    .groups = "drop"
-  )
-
-print(sar_correlation, width = Inf)
-
-
-#-------------------------------------------------------------------------------
-# 5. PLOT PAIRWISE SAR COMPARISONS
+# 4. PLOT PAIRWISE SAR COMPARISONS
 #-------------------------------------------------------------------------------
 
 p_sar_comparison <- ggplot(
@@ -1086,15 +1049,55 @@ ggsave(
   dpi = 300
 )
 
+# Q seems to be the key predictor for SAR for both NPOC and TDN, is this true for other solutes?
+# particularly those not directly realted to discharge and flow?
 
+
+#-------------------------------------------------------------------------------
+# 5. CORRELATION AND AGREEMENT BETWEEN MODELS
+#-------------------------------------------------------------------------------
+
+sar_correlation <- sar_pairwise %>%
+  group_by(Project, Solute, Comparison) %>%
+  summarise(
+    
+    n = sum(complete.cases(First_SAR, Second_SAR)),
+    
+    Pearson_r = cor(
+      First_SAR,
+      Second_SAR,
+      method = "pearson",
+      use = "complete.obs"
+    ),
+    
+    Spearman_rho = cor(
+      First_SAR,
+      Second_SAR,
+      method = "spearman",
+      use = "complete.obs"
+    ),
+    
+    Sign_agreement_pct = mean(
+      sign(First_SAR) == sign(Second_SAR),
+      na.rm = TRUE
+    ) * 100,
+    
+    .groups = "drop"
+  )
+
+print(sar_correlation, width = Inf)
 
 
 #===============================================================================
-# SENSITIVITY TEST 1: INDEPENDENT VS. NON-INDEPENDENT SITES
+# SENSITIVITY TEST 3: INDEPENDENT VS. NON-INDEPENDENT SITES
 #===============================================================================
 
-# Only calculate the two sensitivity groups.
+# Only calculating the independent / non-independent subgroups, since the initial
+# calculation has all of them.
 # The original all-sites SAR values will come from residual_summary.
+
+# Considering removing A model since AQ is shown as the best, but A model might 
+# most influenced by this sensitivity test! 
 
 site_sets <- c("Independent", "Non-independent")
 solutes <- c("NPOC", "TDN")
@@ -1413,6 +1416,9 @@ p_independence <- ggplot(
 # Display plot
 print(p_independence)
 
+
+# Quick interpretation, seems like inlcuding Q in the model limits variability introduced by tributary / mainstem sties
+# 
 
 #-------------------------------------------------------------------------------
 # 7. Save plot
